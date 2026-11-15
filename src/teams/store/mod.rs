@@ -15,7 +15,9 @@ pub(crate) use holder::{hand_back_return, holder_of, return_without_holder, NOT_
 mod member_sessions;
 pub use decision_state::DecisionState;
 pub(crate) mod pages;
+mod progress;
 mod records;
+pub(crate) use progress::{TeamProgress, STUCK_KINDS};
 pub(crate) mod rows;
 mod stage;
 pub(crate) mod timers;
@@ -143,6 +145,19 @@ impl Store {
                 .optional()
                 .map_err(storage)?;
             content.map(|text| decode(&text)).transpose()
+        })
+    }
+    /// Whether the node still lives in the team's plan; an archived node has
+    /// left live work even while its task document keeps its observed stage.
+    pub fn node_live(&self, team: &str, node: u32) -> Result<bool> {
+        self.active()?;
+        self.db.as_ref().map_or(Ok(false), |db| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM nodes WHERE team=?1 AND id=?2)",
+                params![team, node],
+                |r| r.get(0),
+            )
+            .map_err(storage)
         })
     }
     pub fn team(&self, id: &str) -> Result<Option<Team>> {

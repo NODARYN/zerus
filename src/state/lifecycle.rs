@@ -999,7 +999,7 @@ pub(super) fn started_record(s: Started<'_>) -> Value {
 }
 /// What a resume carries from the record it resumes, beside its transcript,
 /// journal and agent hint.
-const RESUMED: [&str; 20] = [
+const RESUMED: [&str; 21] = [
     "prompt",
     "launch_id",
     "last_message",
@@ -1020,6 +1020,8 @@ const RESUMED: [&str; 20] = [
     "launch_label",
     "layout",
     "parent",
+    // Keep recorded evidence with its original run; this grants no live control.
+    "shell_jobs",
 ];
 /// Carries [`RESUMED`] from `previous`, the record a resume continues.
 pub(super) fn carry_resumed(previous: &Value, record: &mut Value) {
@@ -1284,8 +1286,10 @@ pub(super) fn fresh(args: &[String], dry: bool) -> Result<i32> {
     {
         return Err(format!("{name}: saved binding changed; refresh before starting fresh"));
     }
-    if archive::equivalent(&current, &archive::records()?) {
-        return Err(format!("{name}: this session is archived; restore it using --archive ID"));
+    if archive::equivalent(&current, &archive::complete_records()?) {
+        return Err(format!(
+            "{name}: this session is archived; restore it using --archive ID"
+        ));
     }
     if pause_active(&current) || current["resume_pending"] == true {
         return Err(format!("{name}: wait for the current pause or restore to finish"));

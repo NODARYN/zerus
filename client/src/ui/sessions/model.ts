@@ -27,14 +27,15 @@ export const ROW_HEIGHT = { header: 40, card: 94, child: 40, collapsedRow: 40, c
 
 /** In the strip every row keeps its height except compact rows, which show as tiles. */
 export function rowHeight(row: Row, strip = false): number {
-  if (row.type === "header" || row.type === "agent-team") return ROW_HEIGHT.header;
+  if (row.type === "header") return ROW_HEIGHT.header;
   if (row.type === "child") return ROW_HEIGHT.child;
   if (row.type === "creation") return ROW_HEIGHT.card;
   // An ended parent's container is a dimmed compact row with its children's line (zerus-sa9qn.17).
   if (row.type === "container") return row.team ? ROW_HEIGHT.collapsedTeam : ROW_HEIGHT.collapsedRow;
   // A compact parent takes a second line with its child sessions' summary.
-  if (row.compactRow && !strip) return row.team ? ROW_HEIGHT.collapsedTeam : ROW_HEIGHT.collapsedRow;
-  return ROW_HEIGHT.card;
+  const extra = row.agentTeamSummary && !strip ? 28 : 0;
+  if (row.compactRow && !strip) return (row.team ? ROW_HEIGHT.collapsedTeam : ROW_HEIGHT.collapsedRow) + extra;
+  return ROW_HEIGHT.card + extra;
 }
 
 export function sessionMatchesSearch(s: Session, q: string): boolean {
@@ -133,7 +134,7 @@ function listScope() {
     selected: { key: selectedKey(), subagent: subagentOpen(), conversation: selected()?.conversationId },
     roster: (s: Session) => rosterFor(s, s.key === selectedKey() ? followedFor(s.key).value : undefined),
     childDraft: (s: Session, child: { id: string }) => hasDraftKey(`${s.computer}\n${s.name}\n${s.conversationId ?? ""}\n${child.id}`),
-    parentKey: (s: Session) => agentTeams.has(s.key) ? undefined : parentKeyOf()(s), teamCollapsed,
+    parentKey: parentKeyOf(), teamCollapsed,
     containers: true, machineOf: (s: Session) => machineCards[s.computer]?.machine_id,
   };
 }

@@ -1,3 +1,5 @@
+import { TeamStrip } from "./TeamStrip";
+import type { TeamSummary } from "../../store/teams";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import { steadyTitle } from "../lib/steady-title";
 import { tr, trNoop } from "../../i18n";
@@ -391,6 +393,9 @@ function OptionalQuestionsChip(props: { session: Session }) {
 export function SessionCard(props: {
   session: Session;
   agentTeamRole?: string;
+  agentTeamName?: string;
+  agentTeamSummary?: TeamSummary;
+  agentTeamCollapsed?: boolean;
   selected: boolean;
   expandable: boolean;
   expanded: boolean;
@@ -403,7 +408,7 @@ export function SessionCard(props: {
   const s = () => props.session;
   const kind = () => badgeKind(s());
   return (
-    <div class="scard tiled" classList={{ selected: props.selected, offline: statusOf(s()) === "offline", muted: !!s().muted }} data-emphasis={emphasis(s())}>
+    <div class="scard tiled" classList={{ selected: props.selected, offline: statusOf(s()) === "offline", muted: !!s().muted, "agent-team-lead": !!props.agentTeamSummary }} data-emphasis={emphasis(s())}>
       <span class="sc-tile"><AgentTile agent={s().agent} /></span>
       <div class="sc-l1">
         {/* Supervision and Mute are independent: the arrow before the name,
@@ -426,6 +431,7 @@ export function SessionCard(props: {
         <MachineBadge alias={s().machine} computer={s().computer} offline={statusOf(s()) === "offline"} />
       </div>
       <div class="sc-l3">
+        <Show when={props.agentTeamName}>{(name) => <span class="sc-team-role">{tr("Team: %1", name())}</span>}</Show>
         <Show when={props.agentTeamRole}>{(role) => <span class="sc-team-role">{role()}</span>}</Show>
         <Show when={props.fromParent}>{(parent) => <FromParent parent={parent()} onOpen={props.onOpenParent} />}</Show>
         <Show when={s().reviewLater}><Icon name="attention" size={14} class="sc-review" /></Show>
@@ -441,6 +447,7 @@ export function SessionCard(props: {
         </Show>
         <Show when={props.team}>{(team) => <TeamToggle team={team()} onToggle={props.onToggleTeam} />}</Show>
       </div>
+      <Show when={props.agentTeamSummary}>{(team) => <TeamStrip team={team()} expanded={!(props.agentTeamCollapsed ?? props.team?.collapsed)} onToggle={props.onToggleTeam} />}</Show>
     </div>
   );
 }
@@ -604,13 +611,13 @@ export function ContainerCard(props: { container: Container; selected: boolean; 
   );
 }
 
-export function CompactCard(props: { session: Session; agentTeamRole?: string; selected: boolean; onExpand: () => void; team?: Team; onToggleTeam?: () => void }) {
+export function CompactCard(props: { session: Session; agentTeamRole?: string; agentTeamName?: string; agentTeamSummary?: TeamSummary; agentTeamCollapsed?: boolean; selected: boolean; onExpand: () => void; team?: Team; onToggleTeam?: () => void }) {
   const s = () => props.session;
   // Tooltips hold still under the pointer (zerus-5ryrx).
   const described = steadyTitle(() => compactDescription(s()));
   const expand = steadyTitle(() => `${tr("Expand session row")}\n${compactDescription(s())}`);
   return (
-    <div class="scard compact" classList={{ selected: props.selected, two: !!props.team }} data-emphasis={emphasis(s())}
+    <div class="scard compact" classList={{ "agent-team-lead": !!props.agentTeamSummary, selected: props.selected, two: !!props.team }} data-emphasis={emphasis(s())}
       aria-description={tr("Collapsed session row. Press Right to expand.")}>
       <div class="cc-line">
       <span class="cc-tile"><AgentTile agent={s().agent} size={22} /></span>
@@ -618,7 +625,8 @@ export function CompactCard(props: { session: Session; agentTeamRole?: string; s
       <Show when={s().parent?.state === "live"}><SupervisedMark session={s()} /></Show>
       <span class="sc-title ell" style={titleReserve(s().title, 60)} title={described.title()} onPointerEnter={described.enter} onPointerLeave={described.leave}>{s().title}</span>
       <Show when={s().muted}><Icon name="mute" size={14} class="sc-mute" /></Show>
-      <Show when={props.agentTeamRole}>{(role) => <span class="sc-team-role">{role()}</span>}</Show>
+      <Show when={props.agentTeamName}>{(name) => <span class="sc-team-role">{tr("Team: %1", name())}</span>}</Show>
+        <Show when={props.agentTeamRole}>{(role) => <span class="sc-team-role">{role()}</span>}</Show>
       <StatusBadge kind={badgeKind(s())} caption={statusCaption(s())} />
       <OptionalQuestionsChip session={s()} />
       <button class="cc-expand" title={expand.title()} onPointerEnter={expand.enter} onPointerLeave={expand.leave} aria-description={compactDescription(s())}
@@ -627,6 +635,7 @@ export function CompactCard(props: { session: Session; agentTeamRole?: string; s
       </button>
       </div>
       <Show when={props.team}>{(team) => <CompactTeam team={team()} onToggle={props.onToggleTeam} />}</Show>
+      <Show when={props.agentTeamSummary}>{(team) => <TeamStrip team={team()} expanded={!(props.agentTeamCollapsed ?? props.team?.collapsed)} onToggle={props.onToggleTeam} />}</Show>
     </div>
   );
 }

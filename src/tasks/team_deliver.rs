@@ -944,7 +944,7 @@ fn run(
             recover(config, body, &task, &reference, &kind, &here, &store, deadline)
         }
         Ok(Admission::Refused(closed)) => {
-            let (state, error) = attempts::refusal(&closed, &detail.borrow());
+            let (state, error) = attempts::refusal(config, &reference.project, &closed, &detail.borrow());
             Ok(body.reply(state, &error, None))
         }
         Ok(Admission::Legacy(closed)) => Ok(body.reply(
@@ -958,6 +958,14 @@ fn run(
         Ok(Admission::Uncertain(error)) => Ok(body.reply("uncertain", &error, None)),
         Err(error) => Err(error),
     }
+}
+
+/// Real task-command writers behind an admitted in-process test transport.
+#[cfg(all(test, unix))]
+pub(crate) fn fixture_delivery(config: &Config, args: &[String], input: &[u8]) -> Value {
+    let body: Input = serde_json::from_slice(input).unwrap();
+    body.validate().unwrap();
+    run(config, args, &body, &Native, Instant::now() + std::time::Duration::from_secs(20)).unwrap()
 }
 
 fn permit_for_reservation(

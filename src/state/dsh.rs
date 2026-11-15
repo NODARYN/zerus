@@ -19,6 +19,7 @@ pub(in crate::state) mod host_identity;
 #[cfg(unix)]
 mod shell_identity;
 pub(crate) mod witness;
+mod answer;
 pub(in crate::state) mod dispatch_lock;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
@@ -988,6 +989,11 @@ pub(crate) fn launch(
         record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
         dispatch_lock::persist(name, &mut expected, &mut record)?;
         return Ok(());
+    }
+    if let Some(tag) = name.split('/').nth(2) {
+        if let Some(problem) = zerus_client_core::actions::tag_problem(tag) {
+            return Err(problem.into());
+        }
     }
     // A new name has no durable destination reservation yet. Keep allocation,
     // persistence and native creation together; an uncertain reply must retain
@@ -2060,7 +2066,14 @@ fn inspect_record(name: &str, record: &Value, agent_id: Option<&str>, include_pr
     if agent_id.is_none() && record.get("account_defaults").is_some() {
         result["account_defaults"] = record["account_defaults"].clone();
     }
-    if agent_id.is_none() { notifications::enrich(&mut result, notifications::load().as_ref(), journal::journal_name(&record)); }
+    if agent_id.is_none() {
+        notifications::enrich(
+            &mut result,
+            notifications::load().as_ref(),
+            journal::journal_name(&record),
+        );
+        question_routing::enrich(&mut result, question_routing::load().as_ref());
+    }
     if let Some(current) = read.and_then(|read| current_read_of(name, &record, read, &inspected)) {
         result["current_read"] = current;
     }
@@ -2121,7 +2134,7 @@ fn question_cards(record: &Value, inspected: &Value) -> Vec<Value> {
         })).collect::<Vec<_>>();
         let hash=format!("{:x}",Sha256::digest(json!([inspected["generation"],q]).to_string().as_bytes()));
         json!({"question_id":q["id"],"question_hash":hash,"tool_call_id":q["id"],"run_id":record["run_id"],"conversation_id":record["conversation_id"],
-            "agent_id":"main","source":"dsh_native","approval":q["approval"]==true,"can_answer":true,"answer_transport":"native_dsh","questions":items})
+            "agent_id":"main","source":"dsh_native","blocking":q["blocking"]==true && q["approval"]==false,"approval":q["approval"]==true,"can_answer":true,"answer_transport":"native_dsh","questions":items})
     }).collect()
 }
 
@@ -2284,6 +2297,7 @@ pub(super) fn session_action(
         {
             return Err("Rename must preserve the original DeepSeek provider and project".into());
         }
+        rename::validate_new_tag(new)?;
         if new != name && exists(new) {
             return Err("The destination session already exists".into());
         }
@@ -2514,58 +2528,8 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             println!("{receipt}");
         }
         "answer" => {
-            let request = checked_request(&record)?;
-            let inspected = rpc(
-                &record,
-                "inspect",
-                json!({"sessionId":record["conversation_id"]}),
-            )?;
-            let cards = question_cards(&record, &inspected);
-            let card = cards
-                .iter()
-                .find(|q| {
-                    q["question_id"] == request["question_id"]
-                        && q["question_hash"] == request["expected_question_hash"]
-                })
-                .ok_or("This question changed or is no longer pending")?;
-            let mut answers = Vec::new();
-            for answer in request["answers"]
-                .as_array()
-                .ok_or("Answers are required")?
-            {
-                let item = card["questions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|q| q["id"] == answer["question_id"])
-                    .ok_or("Unknown question")?;
-                let mut labels = Vec::new();
-                for id in answer["selected_option_ids"]
-                    .as_array()
-                    .ok_or("Invalid selected options")?
-                {
-                    let option = item["options"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .find(|o| o["id"] == *id)
-                        .ok_or("Unknown answer option")?;
-                    labels.push(option["label"].clone());
-                }
-                if item["allow_other"] != true && !string(answer, "text").is_empty() {
-                    return Err("Choose an approval outcome".into());
-                }
-                answers.push(json!({"id":answer["question_id"],"selected":labels,"custom":string(answer,"text")}));
-            }
-            rpc(
-                &record,
-                "answer",
-                json!({"sessionId":record["conversation_id"],"id":request["question_id"],"generation":inspected["generation"],"answers":answers}),
-            )?;
-            println!(
-                "{}",
-                json!({"status":"answered","request_id":request["request_id"],"name":name,"question_id":request["question_id"],"question_hash":request["expected_question_hash"],"run_id":record["run_id"],"conversation_id":record["conversation_id"]})
-            );
+            let (request, digest) = answer::read()?;
+            println!("{}", answer::run(name, &record, &request, &digest)?);
         }
         "pause" | "resume" => {
             if args.iter().any(|v| v == "--dry-run") {
@@ -2595,10 +2559,11 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             if !new.starts_with("dsh/")
                 || new.split('/').count() != 3
                 || new.contains(['\n', '\r', ':'])
-                || new.chars().any(char::is_whitespace)
+                || new.split('/').take(2).any(|part| part.chars().any(char::is_whitespace))
             {
                 return Err("Invalid DeepSeek session name".into());
             }
+            rename::validate_new_tag(new)?;
             if exists(new) {
                 return Err("This name is already used".into());
             }
@@ -3303,6 +3268,38 @@ mod question_identity_tests {
 #[cfg(test)]
 mod notification_tests {
     use super::*;
+    #[test]
+    fn only_positive_ordinary_host_proof_marks_a_question_as_blocking() {
+        let record = json!({"run_id":"run","conversation_id":"session-A"});
+        let q = json!({"id":"native-call","approval":false,"blocking":true,"questions":[{
+            "id":"choice","question":"Pick one","options":[{"label":"First"}]}]});
+        let card = |q: &Value| {
+            question_cards(
+                &record,
+                &json!({"generation":"host","pendingQuestions":[q]}),
+            )
+            .remove(0)
+        };
+        let original = card(&q);
+        assert_eq!(original["blocking"], true);
+        for (key, value) in [
+            ("blocking", Value::Null),
+            ("blocking", json!(false)),
+            ("blocking", json!("true")),
+            ("approval", json!(true)),
+            ("approval", Value::Null),
+        ] {
+            let mut changed = q.clone();
+            changed[key] = value;
+            let card = card(&changed);
+            assert_eq!(card["blocking"], false, "{key}");
+            assert_eq!(
+                card["can_answer"], true,
+                "manual availability stays independent"
+            );
+            assert_ne!(card["question_hash"], original["question_hash"]);
+        }
+    }
     #[test]
     fn notification_baseline_observes_only_inspect_and_list_with_matching_generation() {
         let record = json!({"name":"dsh/test/session","backend":"dsh","conversation_id":"session-A","run_id":"run-A"});

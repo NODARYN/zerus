@@ -351,6 +351,10 @@ termination of other programs. Already orphaned processes whose session ownershi
 cannot be verified stay untouched; a surviving process using the checkout still
 prevents its removal. Run Terminate from outside the target's own process tree.
 
+The dormant [Linux descendant-custody resource](linux-descendant-custody.md) is
+qualified separately. It has no installed caller and does not enable graceful
+Terminate or change the verified tree and cleanup rules above.
+
 Restore uses `claude --resume ID`, `codex resume ID`, `kimi --session ID` or the
 supported native DeepSeek operation. It preserves the original folder, account
 and project wrapper. There is no fallback to the latest conversation or a new
@@ -494,6 +498,13 @@ starts nothing. A new launch, fork, rename or restore still refuses a label
 that any tmux session holds. A build older than this one finds no pane for a
 session whose terminal is named otherwise, shows it as not live and drops
 `terminal_name` when it rewrites the record.
+
+New session tags (launch, rename and fork) refuse shell metacharacters, curly
+quotes U+2018–U+201E and invisible Unicode formatting characters (category Cf).
+Letters and digits from any script and internal spaces remain valid. This is
+an additional check on newly chosen tags: existing labels remain valid selectors,
+and an old label can be renamed to a safe tag. Always quote names in shell
+commands; older peers and retained labels may still contain shell syntax.
 
 When several sessions share a label (zerus-ucck P3c), a command picks one by
 the identities it carries. These come from its command line
@@ -1065,7 +1076,8 @@ answers, selects or approves anything, never builds a UI permit and never
 changes who is alerted: the child stays quiet exactly as above, and every
 person-only request still notifies. The service watches its own computer's
 rows on every catalog event, whatever the notification settings. A row is an
-edge when it is a running Claude child waiting for input (`phase: input`)
+edge when it is a running Claude, Kimi or DeepSeek child waiting for input
+(`phase: input`)
 whose parent is `live`, not forwarded, and whose host reports
 `human_request: false`; a new `attention_signature` is a new edge, and a
 question already pending at startup counts once. After about 3 seconds the
@@ -1073,13 +1085,30 @@ service reads the child with one bounded `hgs inspect NAME --after
 9223372036854775807 --skip-processes` and its `hgs reference`, at most one
 read per child and two in all, each with a 5-second timeout, from a
 deduplicated queue of at most 64 edges; it reads again immediately before
-sending. Only Claude's own AskUserQuestion card routes: source `hook`, the
-main agent, not optional, no `answer_delivery`, `can_answer: true` and a full
-identity. Claude Code's own prompts (`claude_native_question`), every
-synthetic native card, approvals, trust and sign-in never route. Codex asks
-blocking questions only through native prompts and its async questions are
-optional, so a Codex child has nothing to route in v1; Kimi, DeepSeek and
-OpenCode questions are a follow-up (zerus-sa9qn.34).
+sending. Qualified ordinary AskUserQuestion cards route: Claude's `hook`,
+Kimi's `kimi_wire`, and DeepSeek's `dsh_native` ordinary requests,
+paired with that child's provider. They must name the main
+agent, be blocking and unanswered, carry `can_answer: true` and a full identity;
+Kimi also requires its qualified `kimi_tui` answer transport and positive
+`blocking` evidence from the exact native tool call, turn and questions. A
+background call or missing/changed tool-call history never establishes that
+proof. Its single-choice,
+multiple-choice, multi-part and Other-text answers retain the existing native
+request, terminal identity and original answer receipt guards. Routing delivers
+the question; the parent explicitly calls `hgs answer` under its own permissions.
+OpenCode forms and permissions remain person-only. Public form metadata does not
+prove a native question tool is waiting, and duplicate successful answers do not
+yet recover their original receipt. OpenCode is excluded from parent routing and
+its per-child switch until both contracts are qualified.
+Claude Code's own prompts (`claude_native_question`), every synthetic native
+card, approvals (including Kimi plan and goal approvals), cache choices, trust
+and sign-in never route, even if answerable. Codex async questions are optional,
+so a Codex child has nothing to route. DeepSeek additionally requires its
+`native_dsh` transport and positive `blocking` evidence from the exact owned
+root's ordinary forever-waiting request. Timed waits, typed approval or plan
+intents and older resident bridges without this proof remain unrouted. Its
+existing durable answer UUID journal, host generation and consume-once request
+checks still govern every answer (zerus-fb9ky).
 
 The parent's own current row on the same computer, matched by the link's
 session ID, must be running a terminal agent (Claude, Codex or Kimi); the send
@@ -1166,7 +1195,7 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   by the background service (Store schema 37) and changed only through the
   person's native frontend request (`question_routes`), never by a command
   an agent can run. It is shown only where the service routes (Linux).
-- **Send questions to PARENT** in a Claude child's Session actions is kept on
+- **Send questions to PARENT** in a qualified child's Session actions is kept on
   the child's computer beside its notification preference
   (`question-routing.json`, keyed by the child's durable session ID, so a
   rename or a new conversation keeps it) and shared with every desktop and
@@ -1468,6 +1497,25 @@ agent or changes read marks. New archive pages use the additive mobile
 view and need an updated CLI/connector/relay for paging. Archive IDs are admitted
 from validated pages for one hour (bounded to 2,000 recently paged instances),
 while native inspection and lifecycle actions still verify name/archive/run.
+
+Archive metadata decoding uses the same 16 MiB byte bound as live session
+records. Inputs must be regular files, opened without following a final symbolic
+link or waiting on a FIFO. The opened file's native version and the object still
+named by its path must agree after the bounded read. Selected reads, legacy
+enumeration and preliminary catalog decoding share these checks without changing
+normalized archive identities or label selection.
+
+Ordinary legacy enumeration warns and skips unreadable unrelated archives, so
+resume, search and reference lookup can still use other exact names. A partial
+list never authorizes removal or replacement. Termination checks require a
+complete inventory. Global reconciliation retains every binding if the
+inventory is incomplete. An indexed
+archive match must also pass a fresh body/identity check before it can replace
+the current binding; a failed read keeps that binding available for review.
+Catalog search omission never makes missing or stale cleanup-reference coverage
+empty. Warm catalog pages retain their indexed path without new full scans;
+reference count, aggregate byte and deadline bounds remain unchanged.
+
 An already-open older archive also survives a connector restart or cache expiry:
 `hgs archives lookup --json` accepts only `name` and `archive_id`, reads that one
 authoritative record without scanning the catalog or transcript, and returns its
@@ -1779,11 +1827,15 @@ Existing live and archived records are compacted on their next ordinary write;
 reading a record does not rewrite it. Unknown jobs and calls still awaiting hook
 settlement keep their evidence, including prior-run identities. This storage
 limit does not change Background status, reply deferral or process ownership.
+Pause/Resume carries this evidence with its original job/run identities and
+retention bounds; it does not make recorded jobs current or grant control of them.
 Process output reads use the provider's native log when available. Otherwise
 they return retained text, marking shortened tails as truncated. A pruned job
 or missing native log returns
 an explicit unavailable result. Earlier history can be read from the provider's
 existing logs where available, rather than accumulating in every session record.
+Native completion metadata alone does not establish an empty output. A native
+result that explicitly records empty text remains a valid empty result.
 
 Subagent rows and the Inspector use **Recorded** for offline, archived, paused,
 stopped or unverifiable parent sessions. Recorded children contribute no current
@@ -1897,6 +1949,13 @@ The open conversation and its draft stay in place even when no row matches;
 its row is selected again when it returns to the list. Click another session
 to open it.
 
+**Show in session list**, beside the conversation title, opens the Sessions
+panel, expands the row's groups and centers it without changing the open
+conversation. Hiding filters are adjusted with a brief notice. The row pulses
+twice, or uses a static highlight with reduced motion. Archived conversations
+open in Archive; an already-known selection outside its loaded page is shown
+with an explicit notice.
+
 When the open session is terminated or removed, the conversation pane returns
 to **Select a session**. Polling, new sessions and filter changes keep this
 selection empty until you choose a session. Unsent drafts remain in **Saved drafts**.
@@ -1969,6 +2028,20 @@ view includes archives. Results open the recorded message; **Back to latest
 activity** returns to the live timeline. **Limited history searched**, **Some
 history unavailable** and excerpt labels describe incomplete coverage. Internal
 reasoning and system instructions are excluded.
+
+The unindexed `hgs search --query TEXT` scan and the indexed search's fallback
+bound discovery before loading histories: at most 2,000 directory entries,
+500 record reads and 4 MiB of raw record bytes, with a 500 ms discovery deadline.
+Large shell-job payloads count against that byte budget but are discarded while
+decoding search metadata. Directory enumeration rotates across current bindings,
+ID-layout sessions, archives and DeepSeek bindings instead of collecting an
+entire inventory. Results prefer recent records within the admitted subset;
+they do not imply the globally newest matches when discovery is incomplete.
+The reply then has `truncated: true` and `discovery.complete: false`, so the UI
+keeps **Limited history searched**. `--indexed` retains its separate paged index
+coverage and cursor contract. Discovery bytes also reduce the existing total
+history-read budget. This display-only scan never replaces a complete canonical
+inventory used for lifecycle, cleanup, caller proof or other authority decisions.
 
 **New reply** stays unread until its latest result is visible in an active window
 or an attached Terminal at the bottom. Background windows and old search results
@@ -2238,7 +2311,7 @@ malformed or unsupported native IDs remain unknown and are never exposed as deli
 A verified submitted original returns body-free metadata, its submission time,
 queue flag and an exact native message ID only when the original records one.
 This proves admission to the original input path, not completion of agent work.
-Every other readable outcome is `status: unknown` with a bounded reason. Missing,
+In the default schema 1, every other readable outcome is `status: unknown` with a bounded reason. Missing,
 corrupt, oversized, pending, unbound or mismatched evidence never means Not sent
 and never authorizes replay. New sends record their immutable machine/session
 binding before delivery; older receipts without that binding stay unknown even
@@ -2252,6 +2325,35 @@ state stays missing. Its existing computer-identity check is read-only too.
 The `delivery-receipt-v1` capability marker gates remote forwarding to prevent an
 older CLI from treating the command as a launch. This CLI operation is the first
 part of mobile ordinary-send recovery; connector and phone support ship separately.
+
+The `native-send-outcome-v2` capability advertises an opt-in terminal refusal for
+ordinary Claude, Codex and Kimi sends:
+`hgs send SESSION --delivery-outcome-v2 --json`. A live `NotOffered` witness under
+the original native input lock, before any settings key, input marker or payload,
+can publish `refusal_schema: 2`, `status: not_offered` in the same private input
+receipt store. Its machine, durable session and provider binding comes from the
+exact selected record under that lock. A missing binding leaves an unknown
+outcome and a spent UUID. No other error or receipt absence establishes this proof.
+
+An exact positively bound refusal prints a schema-2 JSON outcome on stdout while
+retaining exit status 1. It carries `proof: native_input_lock`, `request_id`,
+`name`, `machine_id`, `session_id`, `run_id`, `conversation_id`, `provider`, the
+unchanged raw-stdin SHA-256 as `native_digest`, and a bounded `reason`. Submitted
+sends retain their existing successful receipt shape. Exit codes and stderr
+sentences carry no negative proof. This opt-in terminal negative spends its UUID:
+an exact opt-in duplicate returns the original outcome without keys or writes,
+and an ordinary legacy send cannot re-admit it. A person can edit or discard the
+kept message and make a separate explicit send with a new UUID. Ordinary sends
+without the option retain today's retryable `refused_before_input` schema.
+
+The same read-only delivery lookup accepts optional `schema: 2`. An exact
+terminal negative returns schema 2 and `status: not_offered` with its closed
+proof and original bindings; `request_id` identifies the read and
+`message_request_id` identifies the send. It reads at most 8 KiB for the negative
+form and never upgrades an old retryable refusal. Unsupported, corrupt, missing,
+unbound, changed or possibly offered evidence stays unknown. The default schema-1
+lookup remains unchanged. Connector and phone adoption of this mode ships in
+separate compatible slices; this CLI contract alone changes no mobile state.
 
 Recent attachment delivery projection uses the private, rebuildable
 `delivery-receipts-v1.sqlite3` locator in the state directory. A refresh reads
@@ -2492,13 +2594,23 @@ activating the agent's backslash-Enter line continuation. This is verified
 against native history; no second Enter is sent as an automatic retry.
 On Unix, a public send to an existing-ID Claude, Codex or Kimi session can apply
 one exact scheduled Settings change before its message. The same custodian keeps
-the original Root and SID exclusions and one original 25-second deadline across
-both steps. This path keeps the normal 64 KiB text limit and admits at most one attachment
+the original SID exclusion, pinned Root object and one original 25-second deadline
+across both steps. Claude releases only the Root exclusion while its composer
+settles and its native transcript confirms the message. The same pinned Root
+object must be reacquired within the original budget before the single Enter
+and before receipt publication. The request-bound typing marker blocks other
+input and Clear input meanwhile. Both waits share one eight-second window after
+paste, clamped to the original deadline; neither renews it. Only a new typed
+user row or queue enqueue with exactly the significant message lines, stamped
+no earlier than paste, proves submission. Missing proof keeps the original
+receipt uncertain, with a bounded composer preview when its source still permits
+publication. No key or message is replayed. This path keeps the normal 64 KiB text limit and admits at most one attachment
 with at most 1 MiB decoded data. These exact count and byte decisions precede
 selection, receipts and terminal input; larger attachment requests use their
 existing send path, including the normal 20 MiB total attachment limit. Its outer input
 receipt precedes the first Settings key;
-`input_pending_at` still immediately precedes the message paste. After input is
+`input_pending_at` and `input_pending_request` bind the outer request immediately
+before the message paste. After input is
 offered to that custodian, a refusal or lost acknowledgement means delivery is
 uncertain and never authorizes retry. These observations omit the best-effort
 diagnostic screen sample. Zero-pending sends, Background or busy sends and
@@ -4804,6 +4916,19 @@ REF any` to clear the key. When a key is cleared or replaced on another
 computer, the home service releases the node at its next observation; that
 sync and observation window is accepted.
 
+An accepted team result is the team's only while its task still shows the
+execution the node took in. If the task comes back In review under the
+person's own ended run, with conflicting attempts, or Done with conflicting
+attempts under a branch integration, the accepted result is superseded: the
+node ends without merging, its integration and held-step cards close, the lead
+gets one item naming the task, and the task document is left unchanged. A Git
+write that was already admitted keeps its integration fact; the item says the
+accepted result had already been merged, with the commit when known. A merge
+also waits until the home service has applied the task's current state, and a
+task that cannot be read is not merged. From that final check until the Git
+ref update returns, the task's own writes wait: a task command that cannot
+wait that long refuses as busy without writing anything and can be retried.
+
 ```sh
 hgs task add --project orchard [--backlog] [--target codex/api|any [--host ALIAS]] [--position N] < prompt.txt
 hgs task add --project orchard --title "Task title" --request-id UUID < description.txt
@@ -4958,7 +5083,15 @@ request's receipt and never submits, even when no receipt exists. Only a task
 positively without floor or attempt, whose bootstrap gate is positively open
 (a member not yet known current, or the person's hold), keeps the legacy route,
 checked again there; a task that may hold a floor or attempt is never sent
-that way. A reopen of a managed task keeps the person's text as a discussion
+that way.
+
+For `unroutable`, `unverified` and `deadline`, the refusal includes a catalog
+computer label marked diagnostic beside the exact UUID when available,
+explains the offline-writer dependency, and points to
+`hgs task cutover --project P --json`. A catalog label grants no identity or
+route. Desktop Start shows the complete executor reason as its primary notice.
+
+A reopen of a managed task keeps the person's text as a discussion
 note bound to its attempt's ID, saved together with that attempt; the note is
 not queued feedback and is never delivered by itself, and only the receipt
 moves the task back to In progress. Feedback to a task In progress
@@ -4975,6 +5108,14 @@ attempts refuse. Other unknown attempts still hold the task. A later send
 uses a new attempt, and an old request is never replayed.
 The reply contains one task row; read its audit through the bounded task
 history command.
+
+The task inspector's **Saved execution** section shows the saved attempt,
+generation, requirement revisions, executor and recorded events. Submitted does
+not mean begun, and recorded begin does not prove the agent is still working.
+Unknown, conflicting or unexplained evidence remains visible; failed refreshes
+mark the retained record as stale. Missing or unsupported execution details,
+live execution state and the executor queue remain unavailable. The project's
+To do order is separate from an executor queue. This section adds no controls.
 
 The task view shows each unknown attempt with **Abandon attempt…**, followed
 by a separate confirmation. A team-owned task requires the person's command
@@ -6588,6 +6729,18 @@ A versioned adapter connects its Session Controller through a private Unix socke
 The official web host uses a separate `hgs` profile through `--patch`; sign-in and
 secrets stay in `DSH_HOME`. The web endpoint is loopback-only; remote access uses
 SSH. `~/.npm-global/bin` is discoverable from service and SSH launches.
+
+Person answers reserve their original UUID and exact payload digest durably in
+`question_receipts` before native delivery, as Claude/Kimi answers do. An exact
+duplicate returns its recorded outcome even after the question or run changes;
+changed content cannot reuse that UUID. Interrupted, unconfirmed or unknown
+attempts are never replayed. The live session, question hash and host generation
+still authorize a new answer; a UUID grants no authority. The optional native
+`requestId` field works with an older resident bridge unchanged. This contract
+does not restart or reload a running host.
+An uncertain native result retains the canonical `in_progress` receipt status,
+with `outcome: unknown` and its error; existing desktop and phone readers keep
+that original pending.
 
 If the adapter endpoint disappears while the recorded original host is still
 alive, Zerus refuses another launch and leaves the original running. New
@@ -8365,7 +8518,12 @@ now (a `queued` user row, a `queued_command` attachment, `remove` or `dequeue`)
 never proves a later send. A new conversation with no transcript yet counts
 its settled composer emptying after Enter (`native: composer`). Both waits
 share one 8-second window from the paste and hold no state lock, so other
-sessions' hooks run meanwhile. The send's `input_typing` marker on the session
+sessions' hooks run meanwhile. Transcript proof reads use regular, no-follow,
+nonblocking sources, pin the original native file object and verify the named
+object again after each bounded read. Appends remain valid; replaced, truncated
+or unreadable sources stay unknown and never fall back to composer-only proof.
+The existing cumulative 16 MiB read budget does not limit earlier transcript
+history. The send's `input_typing` marker on the session
 keeps every other input out until it ends (other sends and session actions,
 Terminal input and Clear input). Its term starts again with the window, after
 the paste, so slow work before the paste never lets it lapse inside the window;
@@ -8750,9 +8908,17 @@ It is false when the service shares its console with another process, such as
 the terminal it was started from, when it had no console, and on Linux and
 macOS. It is diagnostic only; readiness never depends on it.
 
-`lifecycle.mode` reports the running command's `passive` or `background`
-selection independently of worker admission. On all three desktop platforms, `registration --json
---background` renders the explicit background variant without installing it;
+`lifecycle.mode` retains the running command's requested `passive` or `background`
+selection independently of worker admission. `lifecycle.requested_mode` is an
+explicit alias of that legacy field. `lifecycle.effective_mode` is `background`
+only while the existing ownership and presence status show an active
+service-owned writer; otherwise it is `passive`, including a blocked start or a
+settled revoke. A draining writer remains effective until it stops. These are
+diagnostics, not writer authority or proof that every background component is
+ready; use `lifecycle.background` for component readiness.
+
+On all three desktop platforms, `registration --json --background` renders the
+explicit background variant without installing it;
 `registration mode-check --json` checks the actual installer caller ancestry and
 foreground terminal or installed frontend on Linux, macOS and Windows, without
 granting service ownership. Windows requires a retained installed frontend

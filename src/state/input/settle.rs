@@ -23,7 +23,7 @@ use std::time::Instant;
 
 /// The one window for the settle and the proof, from the end of the paste.
 /// It fits inside the desktop's whole-send deadline (30 s, lock wait included).
-pub(super) const WINDOW: Duration = Duration::from_secs(8);
+pub(in crate::state) const WINDOW: Duration = Duration::from_secs(8);
 /// How long the settled composer must stay the same before Enter.
 const STABLE: Duration = Duration::from_millis(150);
 /// How often the composer or transcript is read again.
@@ -33,24 +33,32 @@ pub(crate) const RESIDUE_CHARS: usize = 2_000;
 /// The most transcript bytes read after the send's starting offset.
 const TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
 
+#[cfg(test)]
+mod source_tests;
+
+#[cfg(test)]
+std::thread_local! {
+    static AFTER_TRANSCRIPT_READ: std::cell::Cell<Option<fn(&std::path::Path)>> = const { std::cell::Cell::new(None) };
+}
+
 /// The agents whose submissions need this proof.
-pub(super) fn applies(agent: &str) -> bool {
+pub(in crate::state) fn applies(agent: &str) -> bool {
     agent == "claude"
 }
 
-pub(super) fn plain(row: &str) -> String {
+pub(in crate::state) fn plain(row: &str) -> String {
     styled_row(row).iter().map(|(ch, _)| ch).collect()
 }
 
 /// Claude's unindented full-width rule above and below its composer.
-pub(super) fn separator(plain: &str) -> bool {
+pub(in crate::state) fn separator(plain: &str) -> bool {
     !plain.starts_with(char::is_whitespace)
         && plain.chars().count() >= 12
         && plain.chars().all(|ch| "─━╌".contains(ch))
 }
 
 /// Claude's footer while it still processes a paste.
-pub(super) fn pasting(screen: &str) -> bool {
+pub(in crate::state) fn pasting(screen: &str) -> bool {
     let rows: Vec<String> = screen.lines().map(plain).collect();
     let Some(last_rule) = rows.iter().rposition(|row| separator(row)) else {
         return false;
@@ -61,7 +69,12 @@ pub(super) fn pasting(screen: &str) -> bool {
 /// The text of Claude's composer around `cursor_y`: from its `❯` row to the
 /// rule below, without the prompt glyph or the continuation indent, bounded.
 /// None when no composer is recognized there.
-pub(super) fn composer_text(agent: &str, screen: &str, cursor_y: usize) -> Option<String> {
+pub(in crate::state) fn composer_text(agent: &str, screen: &str, cursor_y: usize) -> Option<String> {
+    Some(composer_full(agent, screen, cursor_y)?.chars().take(RESIDUE_CHARS).collect())
+}
+
+// The Enter fence compares all captured composer text; only evidence is shortened.
+fn composer_full(agent: &str, screen: &str, cursor_y: usize) -> Option<String> {
     let rows: Vec<String> = screen.lines().map(plain).collect();
     let text = match agent {
         "claude" => {
@@ -102,7 +115,7 @@ pub(super) fn composer_text(agent: &str, screen: &str, cursor_y: usize) -> Optio
         }
     };
     let text = text.trim().to_owned();
-    Some(text.chars().take(RESIDUE_CHARS).collect())
+    Some(text)
 }
 
 /// One composer frame: its styled screen and the cursor, read with the same
@@ -118,7 +131,7 @@ pub(crate) fn frame(terminal: &dyn backend::TerminalBackend, claim: &backend::In
 }
 
 /// The composer's text now, as evidence (bounded), or None.
-pub(super) fn residue(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) -> Option<String> {
+pub(in crate::state) fn residue(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) -> Option<String> {
     let (screen, _, y) = frame(terminal, claim)?;
     composer_text(claim.agent, &screen, y).filter(|text| !text.is_empty())
 }
@@ -126,32 +139,50 @@ pub(super) fn residue(terminal: &dyn backend::TerminalBackend, claim: &backend::
 /// One frame of the composer: its text when it shows a settled paste
 /// (recognized, not empty, no `Pasting…`), and its text at all. None when
 /// the cursor moved during the read.
-fn settled(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) -> Option<(Option<String>, Option<String>)> {
+fn settled(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, complete: bool) -> Option<(Option<String>, Option<String>)> {
     let (screen, x, y) = frame(terminal, claim)?;
-    let text = composer_text(claim.agent, &screen, y).filter(|text| !text.is_empty());
+    let text = if complete { composer_full(claim.agent, &screen, y) } else { composer_text(claim.agent, &screen, y) };
+    let text = text.filter(|text| !text.is_empty());
     let shown = text.clone().filter(|_| !pasting(&screen) && !composer_empty_for_model(claim.agent, &screen, x, y, None));
     Some((shown, text))
 }
 
 /// Whether the composer still shows exactly `text`, settled: the check made
 /// under the state lock immediately before the one Enter (zerus-iitw8.5).
-pub(super) fn still(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, text: &str) -> bool {
-    settled(terminal, claim).and_then(|(shown, _)| shown).as_deref() == Some(text)
+pub(in crate::state) fn still(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, text: &str) -> bool {
+    settled(terminal, claim, false).and_then(|(shown, _)| shown).as_deref() == Some(text)
+}
+
+/// Pending-Send's Enter fence compares the complete captured composer;
+/// the ordinary lane and bounded receipt previews retain their existing form.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) fn still_complete(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, text: &str) -> bool {
+    settled(terminal, claim, true).and_then(|(shown, _)| shown).as_deref() == Some(text)
 }
 
 /// Waits until the composer shows the paste settled: recognized, not empty,
 /// no `Pasting…`, and the same text on reads at least `STABLE` apart. Ok holds
 /// that text; Err the composer's last text when `deadline` passes first. Only
 /// the terminal is read, so the caller holds no lock meanwhile.
-pub(super) fn settle(
+pub(in crate::state) fn settle(
     terminal: &dyn backend::TerminalBackend,
     claim: &backend::InputClaim,
     deadline: Instant,
 ) -> std::result::Result<String, Option<String>> {
+    wait_settled(terminal, claim, deadline, false)
+}
+
+/// Same stable-read window, with no truncation in the pending-Send comparator.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::state) fn settle_complete(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, deadline: Instant) -> std::result::Result<String, Option<String>> {
+    wait_settled(terminal, claim, deadline, true)
+}
+
+fn wait_settled(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, deadline: Instant, complete: bool) -> std::result::Result<String, Option<String>> {
     let mut seen: Option<(String, Instant)> = None;
     let mut last = None;
     loop {
-        if let Some((shown, text)) = settled(terminal, claim) {
+        if let Some((shown, text)) = settled(terminal, claim, complete) {
             last = text.or(last);
             match (shown, &seen) {
                 (Some(text), Some((before, at))) if &text == before => {
@@ -164,7 +195,7 @@ pub(super) fn settle(
             }
         }
         if Instant::now() >= deadline {
-            return Err(last);
+            return Err(last.map(|text: String| text.chars().take(RESIDUE_CHARS).collect()));
         }
         std::thread::sleep(POLL);
     }
@@ -173,8 +204,12 @@ pub(super) fn settle(
 /// Claude's transcript from its length before the paste: where the proof of
 /// this submission must appear. Each read continues after the last complete
 /// line (zerus-iitw8.6), at most `TRANSCRIPT_BYTES` after the start in all.
-pub(super) struct Transcript {
+pub(in crate::state) struct Transcript {
     path: PathBuf,
+    // Hold the selected object against inode reuse. Appends change timestamps.
+    source: Option<(fs::File, (u64, u64))>,
+    length: u64,
+    unavailable: bool,
     /// Where the next read starts: the start plus every complete line read.
     next: u64,
     /// How many bytes after the start have been read.
@@ -183,58 +218,143 @@ pub(super) struct Transcript {
     partial: Vec<u8>,
 }
 
+fn transcript_source(
+    path: &std::path::Path,
+) -> std::io::Result<(fs::File, (u64, u64), fs::Metadata)> {
+    let file = crate::platform::no_follow(fs::OpenOptions::new().read(true)).open(path)?;
+    let (identity, metadata) = crate::platform::FileIdentity::with_metadata(&file)?;
+    if !metadata.is_file() || identity.inode == 0 {
+        return Err(std::io::Error::other(
+            "Claude transcript is not a regular identifiable file",
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            != 0
+        {
+            return Err(std::io::Error::other(
+                "Claude transcript is a reparse point",
+            ));
+        }
+    }
+    Ok((file, (identity.device, identity.inode), metadata))
+}
+
 impl Transcript {
-    pub(super) fn at(path: PathBuf, start: u64) -> Self {
-        Transcript { path, next: start, read: 0, partial: Vec::new() }
+    pub(in crate::state) fn at(path: PathBuf, start: u64) -> Self {
+        let opened = transcript_source(&path);
+        let unavailable = opened
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.kind() != std::io::ErrorKind::NotFound);
+        let (source, length) = opened
+            .map(|(file, id, metadata)| (Some((file, id)), metadata.len()))
+            .unwrap_or_default();
+        Transcript {
+            path,
+            source,
+            length,
+            unavailable,
+            next: start,
+            read: 0,
+            partial: Vec::new(),
+        }
     }
 
     /// The transcript the record names, from its length now. None when the
     /// record names none yet.
-    pub(super) fn of(record: &Value) -> Option<Self> {
+    pub(in crate::state) fn of(record: &Value) -> Option<Self> {
         let path = PathBuf::from(string(record, "transcript"));
         if !path.is_absolute() {
             return None;
         }
-        let start = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        Some(Transcript::at(path, start))
+        let mut transcript = Transcript::at(path, 0);
+        transcript.next = transcript.length;
+        // A named but unreadable source stays present: never fall back to a
+        // composer's empty state as proof of this send.
+        Some(transcript)
     }
 
-    /// The complete rows appended since the last call, in order.
-    fn rows(&mut self) -> Vec<Value> {
+    /// Complete appended rows, or unknown physical evidence. A failed read
+    /// never consumes a row or becomes an empty-transcript success.
+    fn rows(&mut self) -> Option<Vec<Value>> {
+        if self.unavailable {
+            return None;
+        }
+        let rows = self.read_rows();
+        if rows.is_none() && self.source.is_some() {
+            // Once selected, a changed/unreadable source cannot be adopted by
+            // a later poll of this send. Genuinely absent new files may appear.
+            self.unavailable = true;
+        }
+        rows
+    }
+
+    fn read_rows(&mut self) -> Option<Vec<Value>> {
         let budget = TRANSCRIPT_BYTES.saturating_sub(self.read);
         if budget == 0 {
-            return Vec::new();
+            return None;
         }
-        let Ok(mut file) = fs::File::open(&self.path) else {
-            return Vec::new();
-        };
+        let (mut file, source, metadata) = transcript_source(&self.path).ok()?;
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|(_, selected)| *selected != source)
+            || metadata.len() < self.length
+        {
+            return None;
+        }
+        if self.source.is_none() {
+            self.source = Some((file.try_clone().ok()?, source));
+        }
         let mut bytes = Vec::new();
-        let at = self.next + self.partial.len() as u64;
-        if file.seek(SeekFrom::Start(at)).is_err() || file.take(budget).read_to_end(&mut bytes).is_err() {
-            return Vec::new();
+        let at = self.next.checked_add(self.partial.len() as u64)?;
+        if metadata.len() < at {
+            return None;
         }
+        file.seek(SeekFrom::Start(at)).ok()?;
+        (&mut file).take(budget).read_to_end(&mut bytes).ok()?;
+        #[cfg(test)]
+        AFTER_TRANSCRIPT_READ.with(|slot| {
+            if let Some(hook) = slot.take() {
+                hook(&self.path);
+            }
+        });
+        let (_, named, _) = transcript_source(&self.path).ok()?;
+        let length = file.metadata().ok()?.len();
+        if named != source || length < at.checked_add(bytes.len() as u64)? {
+            return None;
+        }
+        self.length = length;
         self.read += bytes.len() as u64;
         self.partial.extend_from_slice(&bytes);
         let Some(end) = self.partial.iter().rposition(|&b| b == b'\n') else {
-            return Vec::new();
+            return Some(Vec::new());
         };
         let complete: Vec<u8> = self.partial.drain(..=end).collect();
         self.next += complete.len() as u64;
-        complete
-            .split(|&b| b == b'\n')
-            .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
-            .collect()
+        Some(
+            complete
+                .split(|&b| b == b'\n')
+                .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+                .collect(),
+        )
     }
 
     /// The first new row that records `message` as submitted or queued.
     fn proof(&mut self, message: &str, pasted_at: f64) -> Option<Proof> {
-        self.rows().iter().find_map(|row| row_proof(row, message, pasted_at))
+        self.rows()?
+            .iter()
+            .find_map(|row| row_proof(row, message, pasted_at))
     }
 }
 
 /// What proved the submission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Proof {
+pub(in crate::state) enum Proof {
     /// A new typed user row of the transcript is the message.
     Transcript,
     /// Claude queued it while busy: a new transcript `enqueue` is the message.
@@ -245,7 +365,7 @@ pub(super) enum Proof {
 }
 
 impl Proof {
-    pub(super) fn name(self) -> &'static str {
+    pub(in crate::state) fn name(self) -> &'static str {
         match self {
             Proof::Transcript => "transcript",
             Proof::Queued => "queue",
@@ -255,7 +375,7 @@ impl Proof {
 
     /// Whether Claude itself recorded the message, in its transcript or its
     /// queue. An emptied composer alone does not show that it accepted it.
-    pub(super) fn recorded(self) -> bool {
+    pub(in crate::state) fn recorded(self) -> bool {
         matches!(self, Proof::Transcript | Proof::Queued)
     }
 }
@@ -263,7 +383,7 @@ impl Proof {
 /// Waits for Claude's own record of the submission until `deadline`. Err
 /// holds the composer's text then, as evidence. `pasted_at` is the wall clock
 /// just before the paste: no proving row may be older.
-pub(super) fn confirm(
+pub(in crate::state) fn confirm(
     terminal: &dyn backend::TerminalBackend,
     claim: &backend::InputClaim,
     mut transcript: Option<&mut Transcript>,
@@ -385,7 +505,7 @@ fn significant(text: &str) -> Vec<String> {
 
 /// Whether `recorded` is exactly `message`: the same significant lines in the
 /// same order, none missing and none added (zerus-iitw8.4).
-pub(super) fn same(message: &str, recorded: &str) -> bool {
+pub(in crate::state) fn same(message: &str, recorded: &str) -> bool {
     let wanted = significant(message);
     !wanted.is_empty() && wanted == significant(recorded)
 }
@@ -403,6 +523,20 @@ mod tests {
         format!("● Fixture complete.\n{}\n❯ {composer}\n{}\n  {footer}\n", rule(), rule())
     }
     const SETTLED: &str = "[Image #1] [Image #2][Pasted text #3 +35 lines]";
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_changed_composer_tail_cannot_hide_behind_the_evidence_bound() {
+        let prefix = "x".repeat(RESIDUE_CHARS);
+        let before = format!("{prefix} original");
+        let after = format!("{prefix} changed");
+        let terminal = Frames::new(vec![(screen(&after, ""), 2, 2)]);
+        assert!(!still_complete(&terminal, &claim(), &before));
+        // The displayed composer, not its evidence preview, is the fence.
+        let terminal = Frames::new(vec![(screen(&before, ""), 2, 2)]);
+        assert!(still_complete(&terminal, &claim(), &before));
+        assert_eq!(composer_text("claude", &screen(&before, ""), 2).unwrap().chars().count(), RESIDUE_CHARS);
+    }
+
 
     /// One captured screen with the cursor column and row.
     type Frame = (String, usize, usize);
@@ -519,6 +653,24 @@ mod tests {
     }
 
     const MESSAGE: &str = "<zerus-message from=\"codex/x/peer\" host=\"arch\">\nReady.\n- Item 1.\nScreenshots:\n/srv/peer/target/a.png\n\"/srv/peer/target/b c.png\"\n</zerus-message>\n\nInspect the attached image at \"/state/attachments/m/01-row.png\"";
+
+    #[test]
+    fn unreadable_named_transcripts_never_fall_back_to_an_empty_composer() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in [dir.path().to_owned(), dir.path().join("missing.jsonl")] {
+            let mut transcript = Transcript::of(&json!({"transcript":path}));
+            let frames = Frames::new(vec![(screen("", "ready"), 2, 2)]);
+            assert!(confirm(
+                &frames,
+                &claim(),
+                transcript.as_mut(),
+                "message",
+                0.0,
+                soon(120)
+            )
+            .is_err());
+        }
+    }
 
     #[test]
     fn the_transcript_must_record_exactly_the_messages_lines_in_order() {
