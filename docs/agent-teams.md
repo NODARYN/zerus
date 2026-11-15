@@ -249,8 +249,9 @@ A card's decisions are **Admit** for a task that waits for admission,
 **Accept** and **Return** for reported work, **Hold** or **Release**, and
 **Cancel task**. Return and Cancel task ask for a reason. Reassign and Route
 are commands (`hgs team reassign`, `hgs team route`); Route cannot move a
-stage, whose member is chosen by the hand-out. **Add task** opens the
-project's task board.
+stage, whose member is chosen by the hand-out. **Add task** opens the New task
+form in the Tasks side panel with this team preselected. A reserved card keeps
+its original destination. Stopped and archived teams offer no Add task.
 
 On a stopped or archived team's board, a task also shows what the current
 stop recorded: cancellation, release, key clearing, a refusal and its reason,
@@ -261,6 +262,12 @@ invented outcome.
 
 - On the task board, a task in Backlog or To do has **Send to team: %1** in
   its menu, one entry per running or paused team of its project.
+- Drag a task card from the session's Tasks side panel onto the Team board to
+  send it to that team. This uses the same **Send to team** command and refusal
+  messages. Only writable Backlog and To do cards from the same project are
+  accepted; the task's current stage is checked again on drop. HTML dragging
+  and the macOS/Windows pointer path have the same checks. An in-flight send
+  is not duplicated, and an uncertain result is never retried automatically.
 - The New task form has a **Team** chooser ("Send the new task to a team's
   queue"), with the same running/paused choices. Stopped, archived, finished
   and not-yet-running teams are not offered. Identically named live teams

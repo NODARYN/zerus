@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js";
 import { tr } from "../../i18n";
-import { selected, setPage } from "../../store/ui";
+import { selected } from "../../store/ui";
+import { canDropTeamTask, requestTeamTask, teamTaskDragOver, teamTaskDrop } from "../../store/teamTaskIntake";
 import { machineCards } from "../../store/machines";
 import { newRequestId, teams, type TeamCall, type UnresolvedCall } from "../../store/teams";
 import { rowIdentity, rowIsSession } from "./session-binding";
@@ -115,8 +116,9 @@ export function TeamWorkspace(props: {
       </Show>
       <div class="team-body">
         <section class="team-main">
-          <header class="team-board-head"><Icon name="columns-3" size={14} /><b>{tr("Board")}</b><span class="grow" /><button type="button" class="btn small" onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
-          <div class="team-canvas">
+          <header class="team-board-head"><Icon name="columns-3" size={14} /><b>{tr("Board")}</b><span class="grow" /><button type="button" class="btn small" disabled={!["running", "paused"].includes(props.view.bar.status)} onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
+          <div class="team-canvas" data-team-task-drop={props.view.bar.id} classList={{ "team-task-drop": canDropTeamTask(props.view.bar) }}
+            onDragOver={(event) => teamTaskDragOver(event, props.view.bar)} onDrop={(event) => teamTaskDrop(event, props.view.bar)}>
             <Show when={all().length} fallback={
               <div class="empty team-empty"><Icon name="list-todo" size={24} /><h3>{tr("The queue is empty.")}</h3><p>{tr("Send a task to the team from the task board.")}</p></div>
             }>
@@ -183,6 +185,7 @@ export function TeamWorkspace(props: {
             </Show>
           </div>
           <div class="team-toolbar">
+            <Show when={["running", "paused"].includes(props.view.bar.status)}><span class="team-note">{tr("Drop a Backlog or To do task here to send it to this team.")}</span></Show>
             <Show when={props.view.truncated}><span class="team-note">{tr("Some cards are not shown.")}</span></Show>
             <span class="grow" />
             <Show when={props.view.after}><button type="button" class="btn small" data-team-first-page onClick={() => props.onPage(null)}>{tr("First page")}</button></Show>
@@ -277,7 +280,7 @@ export function TeamTab() {
         <span class="dim">{leadChanged() ? tr("The team's lead session has changed. Open it from Teams again.") : binding().state === "none" ? tr("This session is not a team lead.") : tr("Finding the team of this session…")}</span>
       </div>
     }>{(current) => <TeamWorkspace view={current()} busy={teams.busy()} failure={readFailure()} actionFailure={actionReason(source())}
-      onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => setPage("projects")} />}</Show>
+      onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => { const fresh = view(); if (fresh) requestTeamTask(fresh.bar); }} />}</Show>
     <Show when={!view() && actionReason(source())}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
     <TeamUnresolvedList entries={teams.unresolved()} busy={teams.busy()} onCheck={(entry) => void teams.check(entry, source())} onDismiss={(entry) => void teams.dismiss(entry, source())} />
     <TeamConfirmDialog source={source()} />

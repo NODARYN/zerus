@@ -1307,6 +1307,7 @@
   "Drag to reorder, or use Alt+Up / Alt+Down.": "Перетащите, чтобы изменить порядок, или используйте Alt+Up/Alt+Down.",
   "Drag to resize folders and worktrees.": "Перетащите, чтобы изменить размер папок и рабочих деревьев.",
   "Drive folders stay uninitialized without a real reverse peer. Project history and session membership still copy.": "Папки Drive остаются неинициализированными без настоящего обратного подключения. История проектов и принадлежность сессий всё равно копируются.",
+  "Drop a Backlog or To do task here to send it to this team.": "Перетащите сюда задачу из бэклога или списка «К выполнению», чтобы передать её этой команде.",
   "Drop between 1 and 8 files.": "Перетащите от 1 до 8 файлов.",
   "Drop files to attach to this message": "Перетащите файлы, чтобы прикрепить их к этому сообщению.",
   "Drop files to insert their paths in Terminal": "Перетащите файлы, чтобы вставить их пути в терминал.",
