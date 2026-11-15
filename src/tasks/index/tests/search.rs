@@ -95,8 +95,8 @@ fn search_pages_only_matches_beyond_a_window_and_counts_each_stage() {
         assert_eq!(decoded, 0);
         assert_eq!(
             stamped,
-            page.rows.len() * 3,
-            "only the returned tasks' three files are stamped"
+            page.rows.len() * 5,
+            "only the returned tasks' five files are stamped"
         );
         assert_eq!(page.position, found.len());
         let fallback = super::super::super::documents_page_in(

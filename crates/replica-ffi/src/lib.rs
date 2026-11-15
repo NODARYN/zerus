@@ -11,6 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use zerus_replica as replica;
 
+mod mobile_edit;
+pub use mobile_edit::*;
+mod task_execution;
+pub use task_execution::{TaskAttemptInfo, TaskExecutionInfo};
+
 uniffi::setup_scaffolding!();
 
 /// A rule refused the change and nothing changed (show the message), or
@@ -353,11 +358,15 @@ pub struct TaskInfo {
     /// Derived from this task's body and description media, not unrelated history.
     #[uniffi(default = "")]
     pub content_revision: String,
+    /// Bounded saved evidence only; never a live observation or write capability.
+    #[uniffi(default = None)]
+    pub execution: Option<TaskExecutionInfo>,
 }
 
 impl TryFrom<replica::TaskView> for TaskInfo {
     type Error = replica::Error;
     fn try_from(view: replica::TaskView) -> replica::Result<Self> {
+        let execution = task_execution::project(view.schema, view.execution);
         let text = if view.title.is_empty() {
             view.text.clone()
         } else if view.text.is_empty() {
@@ -405,6 +414,7 @@ impl TryFrom<replica::TaskView> for TaskInfo {
             log: view.log.into_iter().map(Into::into).collect(),
             attachments,
             content_revision,
+            execution,
         })
     }
 }
@@ -555,7 +565,7 @@ pub struct TaskStore {
 
 impl TaskStore {
     fn store(&self) -> Result<replica::ProjectStore> {
-        replica::ProjectStore::open_within(&self.root, &self.project, LOCK_WAIT)?
+        replica::ProjectStore::open_phone_within(&self.root, &self.project, LOCK_WAIT)?
             .ok_or_else(|| ReplicaError::Failed("the project's tasks are busy; try again".into()))
     }
 
@@ -826,6 +836,18 @@ impl TaskStore {
     /// hold (a Done task the person opens); each then stays with the phone.
     pub fn exchange_fetching(self: Arc<Self>, tasks: Vec<String>) -> Arc<TaskExchange> {
         let mut exchange = replica::phone::Exchange::new();
+        exchange.fetch(tasks);
+        Arc::new(TaskExchange {
+            store: self,
+            state: Mutex::new(exchange),
+        })
+    }
+
+    /// Opt-in uploads for the exact host advertising task_media_upload_v1.
+    /// Old hosts keep exchange/exchange_fetching; never downgrade an in-flight
+    /// upload or turn an uncertain document exchange into native Send.
+    pub fn exchange_uploading(self: Arc<Self>, tasks: Vec<String>) -> Arc<TaskExchange> {
+        let mut exchange = replica::phone::Exchange::with_uploads();
         exchange.fetch(tasks);
         Arc::new(TaskExchange {
             store: self,

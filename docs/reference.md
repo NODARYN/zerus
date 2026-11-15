@@ -354,6 +354,10 @@ prevents its removal. Run Terminate from outside the target's own process tree.
 The dormant [Linux descendant-custody resource](linux-descendant-custody.md) is
 qualified separately. It has no installed caller and does not enable graceful
 Terminate or change the verified tree and cleanup rules above.
+The [dormant original supervisor bridge](original-supervisor-owner.md) retains
+source-bound ownership behind a const-false gate. Its read-only observations
+grant no graceful, signal or cleanup authority; owned-mode records refuse the
+legacy root-only finalizer.
 
 Restore uses `claude --resume ID`, `codex resume ID`, `kimi --session ID` or the
 supported native DeepSeek operation. It preserves the original folder, account
@@ -1086,7 +1090,8 @@ service reads the child with one bounded `hgs inspect NAME --after
 read per child and two in all, each with a 5-second timeout, from a
 deduplicated queue of at most 64 edges; it reads again immediately before
 sending. Qualified ordinary AskUserQuestion cards route: Claude's `hook`,
-Kimi's `kimi_wire`, and DeepSeek's `dsh_native` ordinary requests,
+Kimi's `kimi_wire`, DeepSeek's `dsh_native` ordinary requests, and OpenCode's
+`opencode_native` API-verified question tools,
 paired with that child's provider. They must name the main
 agent, be blocking and unanswered, carry `can_answer: true` and a full identity;
 Kimi also requires its qualified `kimi_tui` answer transport and positive
@@ -1096,10 +1101,17 @@ proof. Its single-choice,
 multiple-choice, multi-part and Other-text answers retain the existing native
 request, terminal identity and original answer receipt guards. Routing delivers
 the question; the parent explicitly calls `hgs answer` under its own permissions.
-OpenCode forms and permissions remain person-only. Public form metadata does not
-prove a native question tool is waiting, and duplicate successful answers do not
-yet recover their original receipt. OpenCode is excluded from parent routing and
-its per-child switch until both contracts are qualified.
+OpenCode qualifies only an active exact native session's pending form whose
+referenced assistant message contains the same running `question` tool call and
+whose complete fields match that tool's question input. It uses at most eight
+native message point reads in one 250 ms budget, without scanning history.
+Missing, changed, completed, foreign or ambiguous tool/form evidence stays
+unqualified; public form metadata alone never establishes authority. Generic
+forms and all permissions remain manual. Exact duplicate OpenCode answers return
+the original durable answered receipt before reading live native state, including
+after the form disappears or the run changes. Changed content or target under the
+same UUID is refused; legacy unbound, pending, unknown or unavailable receipts
+never permit another delivery.
 Claude Code's own prompts (`claude_native_question`), every synthetic native
 card, approvals (including Kimi plan and goal approvals), cache choices, trust
 and sign-in never route, even if answerable. Codex async questions are optional,
@@ -1441,8 +1453,11 @@ order, subject to the archive page's byte budget. Live and Saved rows remain
 complete. The additive host-level `archive_page` describes this preview without
 duplicating its rows: `total`, `total_capped`, `next_cursor`, `previous_cursor`,
 `position`, `from`, `until`, `query`, and `command: ["archives","--json","--bounded"]`.
-Its total counts at most 50 archives; `total_capped: true` means a lower bound,
-and an empty `next_cursor` means there are no older rows. To continue, pass
+Its total counts at most 50 archives; `total_capped: true` means a lower bound.
+For a ready catalog an empty `next_cursor` means there are no older rows.
+While catalog coverage is unavailable, the preview has `partial: true`,
+`total_capped: true`, `catalog_complete: false` and an `error`; its empty
+window and cursor do not prove there are no archives. To continue, pass
 `next_cursor` as `cursor` with the same range/query to the command in the
 descriptor. New completions appear on Refresh; additions do not shift a
 continuation's date/ID keyset. Agents must follow this cursor to enumerate the
@@ -1450,8 +1465,8 @@ whole archive. `--no-archives` continues to omit archives and the preview
 descriptor, retaining `archive_paging` and `archive_revision` for client discovery.
 Only the preview's rows open summaries or check transcript metadata for actions;
 ordinary indexed polls do the same bounded work with 50 or 20,000 archives.
-Initial index creation and directory-generation reconciliation retain the
-existing one-time metadata indexing described below.
+Initial index creation and refresh run in the bounded background worker
+described below; a poll never rebuilds the archive catalog inline.
 `hgs status` forwards the preview's count as `sessions.archived`, with additive
 `archived_total_capped` when a preview is present; its text shows `50+ archived`
 for a capped count.
@@ -1488,11 +1503,30 @@ exact native identity. Cursors belong to one computer/catalog and cannot be
 reused after rebuilding it.
 
 A rebuildable `archive-catalog-v1.sqlite3` indexes metadata beside the durable
-state. Archive JSON files remain authoritative. Its first use indexes existing
-records; unchanged polls/pages reuse it, and atomic archive writes, rename,
-restore or forget update the directory generation. Only requested rows open
-conversation summaries, outside the state writer lock. Browsing never starts an
-agent or changes read marks. New archive pages use the additive mobile
+state. Archive JSON files remain authoritative. A cold or stale page reports
+incomplete coverage and requests one coalesced detached metadata worker; retry
+the read after that worker publishes complete coverage. The worker keeps its
+directory iterator between slices of at most 64 entries, 32 MiB of bounded
+native input and a cooperative 25 ms budget. It reads each new, changed or
+damaged entry once for the search, identity and folder-reference projections.
+Unchanged entries use device/inode/size/mtime/ctime versions and validated compact
+rows without rereading archive bodies; removed files retire only derived rows.
+Each helper is bounded to 60 seconds, 16 GiB of charged native input and 8192
+steps. A later request resumes from committed per-file progress; an interrupted
+walk never publishes a complete roster. The worker also bounds its inventory to
+100,000 directory entries and compact bookkeeping to 32 MiB. An over-limit or
+unreadable inventory remains explicitly unavailable.
+
+Unchanged polls/pages reuse the catalog; atomic archive writes, rename, restore
+or forget invalidate its directory generation. In-place changes are discovered
+by the next background version walk. Selected positives still read and verify
+the exact native archive. A negative identity lookup needs a fresh complete
+native filename/version census and a validated identity manifest independent of
+search omissions. Partial or stale coverage is never absence, and current
+bindings are retained while coverage is unavailable. Cleanup keeps its separate
+fresh canonical reference proof and its existing smaller budgets.
+Only requested rows open conversation summaries, outside the state writer lock.
+Browsing never starts an agent or changes read marks. New archive pages use the additive mobile
 `archive_list` capability; older computers retain their previously loaded archive
 view and need an updated CLI/connector/relay for paging. Archive IDs are admitted
 from validated pages for one hour (bounded to 2,000 recently paged instances),
@@ -5079,15 +5113,14 @@ the attempt as not admitted; a new action with a new ID may send it);
 `cutting_over` (the fence, the hold or unknown bootstrap evidence; nothing was
 reserved or sent); or `uncertain` (the input may have arrived; it is never sent
 again). Repeating a request ID, a restart or `--recover-only` only reads that
-request's receipt and never submits, even when no receipt exists. Only a task
-positively without floor or attempt, whose bootstrap gate is positively open
-(a member not yet known current, or the person's hold), keeps the legacy route,
-checked again there; a task that may hold a floor or attempt is never sent
-that way.
+request's receipt and never submits, even when no receipt exists. Managed native starts require the current causal cutover even when the older
+bootstrap would have selected a legacy route. Missing/unproven migration
+history stays a task-specific refusal; it never authorizes a legacy offer.
 
 For `unroutable`, `unverified` and `deadline`, the refusal includes a catalog
 computer label marked diagnostic beside the exact UUID when available,
-explains the offline-writer dependency, and points to
+explains that absent computers do not block reachable ones and this computer
+must finish its own automatic cutover, and points to
 `hgs task cutover --project P --json`. A catalog label grants no identity or
 route. Desktop Start shows the complete executor reason as its primary notice.
 
@@ -5139,6 +5172,19 @@ never shift the page after it. A page past either end returns the nearest whole
 page, and only an empty stage has no rows. `--if-revision` with the last
 `revision` answers `{"unchanged": true, "revision": ...}` without rows when
 nothing changed, after checking that page's rows against their files.
+
+Task lists check the caller before discovering session bindings. Only session
+references in the selected rows need routing metadata; an empty or unchanged
+page, or one containing only remote references, reads no session bodies for
+routing. The caller's own record is still checked for agent proof.
+The disposable `task-routing-v1` cache keeps routing fields without command
+output and verifies the canonical binding namespaces and file versions on each
+lookup. Cold or changed metadata is refreshed in bounded slices, with a finite
+background helper when needed. While coverage is incomplete, the command
+returns `Task session routing is incomplete` and asks the caller to retry;
+unreadable canonical evidence returns an unavailable error. Neither case
+reports a referenced session as missing. This cache supplies task-list labels
+only; caller proof and task changes still verify canonical session records.
 
 `--session ID` (`launch_id:...` or `run_id:...`, with `--host` for a session on
 another computer) pages one session's view of the stage: the tasks its
@@ -5640,67 +5686,68 @@ The check reports:
   rises, durably before the catalog publishes the change, whenever its peers
   change, including a change an older build made, which the next read
   records);
-- `closed`: the first node that keeps the fence closed, and why:
-  - `unreachable`, `unverified` (another computer answered), or `unroutable`
-    (a catalog machine that no verified route reaches);
-  - `protocol`, `task_schema` below 7, `store`, or `fence_unsupported`;
-  - `unavailable` (the node's own replica cannot be read now: its hello sends
-    an explicit unavailable part, and it stays a writer);
-  - `busy` (the catalog lock was not free within the budget), `deadline`,
-    `discovery_bound` (a node still unseen beyond 16 hops), or
-    `too_many_nodes` (more than 256 candidates, from the catalog, every
-    visited node's writers and the nodes found over peers, counted as they
-    are added). A partial universe is never certified.
+- `closed`: a global local-identity, resource, discovery or task-admission
+  refusal. Per-node `closed` fields such as `unreachable`, `unverified`,
+  `unroutable`, unsupported schema/capability or `unavailable` are retained
+  negative facts; they do not require that computer to acknowledge.
 - `universe_closed`: the first node that keeps the universe closed, alone;
 - `proof`, when the fence is proved: the common `version`, the `rounds` it
   took, every node with the store it answered from, and `admissible: true`
   once the final admission passed (C3c2).
 
 A node whose hello has no replica key, as an older build sends, shares no
-tasks, so it alone is left out. A node whose replica cannot be read sends a
-present part instead, and is never left out.
-The nodes behind it are not left out: with no other route they close the fence
-as `unroutable`. The check holds no lock across the network, creates no floor
-and no attempt, and grants nothing.
+tasks. An unreadable writer and writers behind an unavailable route remain
+listed as exact negative facts, without invented coverage. The check holds
+no lock across the network and grants no native input authority.
 
-The proof (C3c2) runs over that universe. Each round sends every node, over
-its verified route, `swarm replica-task` for the task. That request carries
-this computer's version (a canonical map: decimal peers and positive counts,
-compared as the changes they name, never as encoded bytes) and the updates the
-node lacks. The node then:
-- imports them;
-- runs the store's locked schema repair;
-- saves durably;
-- reads the task again from its files;
-- answers with that read: its version, whether its state is every change it
-  holds, its raw stored schema, whether it holds a valid floor, and the updates
-  this computer lacks.
+Current task writers use fence capability 2 and the reachable-writer causal
+cutover. Computers are optional: unreachable, unverified, unsupported or timed-out
+writers are recorded as exact `not_cut_over` node/store facts, not required
+acknowledgements. Other available current computers proceed. A bounded probe per
+route leaves the rest of the original deadline for healthy peers. Global
+resource/discovery bounds and an unreadable local identity still refuse.
 
-A node answers only from the store its fresh hello over that route showed;
-any other store closes the proof as `changed_identity`. The fence is proved
-when, in ONE round, every node answers exactly this computer's version, with
-nothing more to send. That version must hold a valid floor and a RAW stored
-schema of at least 7 (not the raised one a cut-over task reports), and this
-computer's copy must still hold it when read again afterwards. Answers for
-different versions are never combined. At most three rounds run within the
-budget. The universe is then read again and must be the same incarnation.
+Before availability changes, the common import/save boundary checks every causal
+span against the genuine historical first floor and then the immutable schema-8
+seal. The available cohort freezes exact versions, adopts one dedicated seal,
+and confirms one common version. A peer lost during prepare or confirmation is
+never counted as an adopter and does not veto the remaining cohort. Final
+admission rechecks catalog/project/store identity, own durable pin, pending
+prepare, hold, floor, seal and exact task version before any reservation.
 
-The final admission takes the catalog lock, the project lock and the store's
-admission, in that order and within the budget. Under those locks it reads
-again:
-- this computer's membership view, its store and its replica root;
-- the hold, for a task that records no attempt yet;
-- the task: holding the proven version, its floor and its raw stored schema.
+Returning updated computers automatically adopt the already admitted seal from
+a freshly verified current source. A clean prefix catches up without a person
+ceremony. Extra old-rule writes are refused directly and through relays, with
+original local files kept for review and no automatic replay. Missing, shallow,
+conflicting or damaged migration evidence holds only that task. An older build
+reads schema-8 tasks as newer/read-only; a disconnected old executable cannot be
+remotely prevented from making unknown local effects, which are never treated
+as accepted current task writes. See
+`docs/superpowers/specs/2026-11-14-reachable-task-writer-cutover.md` for the exact
+root, native custody, importer/writer census and qualification boundaries.
 
-Only then would a reservation run; the check runs none. Closed reasons add:
-`no_floor`, `schema`, `damaged`, `not_converged`, `changed_identity`,
-`membership_changed`, `changed_version`, `held`, `malformed`, `busy` and
-`deadline`. It proves the schema barrier only: not exclusive delivery, not
-consent.
+Ordinary edits and team cancellation of an unsealed task use Start's same
+discovery and admission entry, with no business write in its preparation
+callback. One original deadline reserves local settlement time before any
+remote preparation. Source lookup, mandatory original-source verification and Prepare each divide
+their bounded discovery pool fairly within that same cutoff. Slow optional
+readers cannot hide a later healthy original seal or cause a new floor to be
+minted. Already sealed tasks retain their native protocol
+validation and ordinary business rules. An older task with no floor is included in the bounded background pass; it need not be started first.
+Returning clean prefixes adopt the existing seal before any first-floor write,
+and extra old-rule writes still require review. Recovery requires a current
+native source to confirm that exact original seal; a missing or mismatched
+confirmation leaves the original held. A pending team cancellation
+recovers on its next due backoff pass once migration can finish; the person
+need not press Retry. A 60-second service pass does not bypass that backoff.
+
+The check grants no dispatch authority or attempt. Current cutover preparation
+can persist protocol custody/seal metadata; it never offers native input.
 
 A proof that passed its final admission can be kept as the task's
 certificate (C3e): `<project store>/fence/<task>.json`, inside the replica
-root, so a replaced root loses it. The record holds:
+root, so a replaced root loses it. The format-2 record holds:
+- the immutable admitted seal and exact negative `not_cut_over` facts;
 - the proven version;
 - this computer's membership view (peers, catalog machines, membership
   generation), store, root and configuration identity (the Location identity
@@ -5911,6 +5958,7 @@ hgs team current
 hgs team settings|pause|resume|stop|archive|decide < request.json
 hgs team admit|route|accept|return|reassign|hold|release|cancel|reply < request.json
 hgs team pause-member|resume-member|stop-member|archive-member < request.json
+hgs team add-member|swap-member|rename-team|set-goal < request.json
 hgs team ask|verdict < request.json
 ```
 
@@ -5961,12 +6009,16 @@ its operation: `op`, `actor` and any other foreign field are refused.
 | `waiting` | yes | | | none |
 | `status` | yes | yes | yes | none |
 | `inbox`, `queue`, `cards`, `journal` | yes | yes | | none |
+| `phases`, `phase --phase N` | yes | yes | | none |
+| `submit-draft-phase` | yes | yes | | `phase`, `draft` |
+| `edit-draft-phase` | yes | yes | | `phase`, `generation`, `draft` |
 | `current` | | yes | yes | none |
 | `settings` | yes | | | `settings`, the complete settings object |
 | `pause`, `resume` | yes | yes | | none |
 | `stop`, `archive` | yes | | | none |
 | `decide` | yes | | | `card`, `decision` |
 | `admit`, `hold`, `release` | yes | yes | | `node` |
+| `set-deps` | yes | | | `node`, `deps` (up to 200 `{node, kind?}` entries; `hard` by default, or `soft`) |
 | `route` | yes | yes | | `node`, `role`, `pipeline`, optional `deps`, `writes`, `assignee` |
 | `accept` | yes | with the delegation | | `node` |
 | `return`, `cancel` | yes | yes | | `node`, `reason` |
@@ -5974,8 +6026,32 @@ its operation: `op`, `actor` and any other foreign field are refused.
 | `reply` | yes | with the delegation | | `item`, `text` |
 | `pause-member`, `resume-member` | yes | yes | | `member` |
 | `stop-member`, `archive-member` | yes | | | `member` |
+| `add-member` | yes | | | `role`, `agent`, optional `model`, `effort`, `account` |
+| `swap-member` | yes | | | `member`, `agent`, optional `model`, `effort`, `account` |
+| `rename-team` | yes | | | `name` |
+| `set-goal` | yes | | | `goal` |
 | `ask` | | | the attempt's holder | `node`, `generation`, `text` |
 | `verdict` | | | the stage's holder | `node`, `generation`, `pass`, `text` |
+
+Live-team edits use the same receipt and revision rules below. `add-member`
+chooses a role from the team's pinned catalog and reserves a new, never reused
+member ID. `account` is `{"mode":"freest"}` (the default) or
+`{"mode":"named","account":"example"}`. Model and effort are optional;
+empty strings use the selected account's defaults. Seat choices leave the
+pinned role and all other members unchanged. The service launches an added
+member through its ordinary launch ledger.
+
+`swap-member` requires a member already stopped by the person, with a known
+completed launch and no open tasks, unsettled attempts or unknown receipts.
+An active member is refused with `Stop the member first; open work: N`.
+Swap does not stop or archive the old session: it loses its team binding and
+stays outside the team. The new agent keeps the member ID, task history,
+owned folder and branch. The old original and receipts remain immutable; a
+new launch original verifies the same checkout before launching. There is no
+active cutover or existing-session adoption. A changed generation fences stale
+launch admission. `rename-team` changes the display name only; already reserved
+session, worktree and branch names stay. `set-goal` accepts an empty string to
+clear the goal. These four edits require a running or paused team.
 
 The envelope of every write is `request_id` (a fresh lowercase UUID), `team`
 (the team's UUID, chosen by the caller for `create`) and `expected_revision`
@@ -5989,6 +6065,49 @@ queue entry, `item` for an inbox item or a card the write opened. A write waits
 `store_busy`, nothing was written, and it may be sent again. `storage_failed`
 means the result is not known: repeat the same request with the same
 `request_id`, never a new one.
+
+**Planned drafts.** The Team tab's Layers view reads bounded draft phases;
+approval is shown unavailable until publication is implemented. `phases`
+pages at most 200 summaries and supplies `next_phase`, `next_node`, the
+pinned role/pipeline routes and their revision. `phase --phase N` reads one
+complete draft with its generation, revision and editability. An unavailable
+read never means an empty plan. Phase 0 remains the only intake queue.
+
+`submit-draft-phase` uses `next_phase`; new draft nodes use consecutive IDs
+from `next_node`. `edit-draft-phase` retains saved IDs and includes the
+generation that was read. Removed IDs are never reused. The complete `draft`
+has `title`, `barrier` and 1 to the configured phase cap (at most 200) `nodes`.
+Each node has `id`, `title`, `text`, nonempty `criteria`, `role`, `pipeline`,
+optional `deps`, `assignee`, `writes`, `estimate_minutes` and `kind` (`task`
+or `check`). Titles are at most 200 bytes, text 16,384 bytes, and criteria
+1 to 32 entries of at most 2,048 bytes each. The whole request keeps its
+262,144-byte bound. Runtime/task identity fields are refused. Dependencies
+must be acyclic; hard edges stay within the phase. Overlapping writes need
+an ordering dependency or a later phase's barrier. Validation allows at most
+64 million estimated byte
+comparisons over unordered task pairs, otherwise an atomic `over_cap`
+refusal asks for simpler write sets or a smaller phase. Drafts count against
+the team's planned-work cap, including pipeline stage creation. Settings
+cannot lower that cap below admitted tasks and saved drafts. Drafts create
+no task documents, live bindings,
+member launches or hand-outs. Saving preserves the shown revision; an
+unconfirmed save is checked through the existing unresolved action, never
+automatically resubmitted with a new request identity.
+
+`set-deps` replaces dependencies only before the dependent task has started,
+without changing its route, holder or pipeline. The store refuses a started,
+reserved, handed-out, submitted or reported dependent, any current or historical
+attempt or effect, and an unsettled decision. These are store facts checked
+inside the writer transaction; a pending task may still depend on a started or
+done prerequisite. The queue exposes `deps_editable` from those same facts;
+an absent value keeps the UI read-only. Refusals keep their request receipt.
+It also refuses a stage, missing or repeated dependencies,
+self-dependencies and cycles (including soft edges). The graph in the Team tab
+shows one bounded queue page; dependencies outside the page stay listed on the
+card. Drag a card's output port onto another card, or select its port and then
+the target port, to add a hard dependency. Select an arrow and press Delete
+to remove it. The task detail also lists every dependency and allows editing an off-page
+endpoint by number. Edits send the revision shown and preserve other edges.
 
 Rules the store enforces beyond the table: a lead's `accept` and `reply` need
 the team's `accept_results` and `answer_members` delegations; a lead accepts
@@ -6017,7 +6136,19 @@ the template as the catalog holds it.
 
 **Replies.** The read shapes are pinned in `crates/team-plan/fixtures/`:
 `cli-list.json` (`list`: `{ok, actor, rows, next}`, each row
-`{id, project, name, status, lead, home, revision, lead_session}`),
+`{id, project, name, status, lead, home, revision, lead_session, members, progress}`),
+where `progress` is a bounded list-page projection: `tasks` (non-cancelled task
+nodes, live and archived), `accepted` (live and archived accepted tasks),
+`questions` (open `question:*` member inbox items), `members` (active/paused
+members plus the lead, counted once even before launch), `phases`,
+`phases_done`, and `stuck`. Internal stage nodes count in neither task count.
+Each count stops at 1000 and has a corresponding `<field>_more` boolean; true
+means a lower bound, displayed as `1000+` without a percentage. Exactly 1000
+keeps the flag false. `stuck` means an open `launch_blocked`, `launch_uncertain`,
+`silent_lead` or `team_actor_blocked` card, or a `project_limit` service item.
+Questions, ordinary approvals, `launch_capacity` cards and delivery-uncertain
+inbox items alone do not establish Stuck. The fields arrive with the bounded
+list read, without extra per-team reads; an older CLI may omit `progress`.
 `cli-waiting.json` (`waiting`: open cards of every team, oldest first, each
 with its `team`), `cli-status.json` (`status`: `{ok, actor, team, members,
 counts, service_running, health, service_items}`; the team without its
@@ -7564,6 +7695,60 @@ the session (`input_cleared`) and settles an unconfirmed earlier input whose
 residue it was. It is only ever the person's action: no delivery or retry uses
 it. The read is `action: "composer"`, which returns the text, `clearable` and
 the reason when it is not.
+
+**Release unconfirmed input** uses the same Terminal toolbar slot for a local
+Claude, Codex or Kimi session whose conversation identity is already known, whose native
+composer is verified empty, and whose previous input remains unconfirmed
+(zerus-iitw8.9). It requires the person's explicit **I checked Terminal: mark
+the previous input as handled** confirmation. The message may or may not have
+reached the agent. This action sends no keys, does not send or retype the message,
+and does not claim that the agent accepted it. A busy agent, copy mode, an active
+delivery proof, a changed input or terminal, and unknown native state refuse it.
+For Codex and Kimi, a positive completed native main turn can establish eligibility
+when cached hook status is stale. That older completion never confirms a later input.
+If hooks never established a conversation identity, the identity refusal stays;
+finish startup or repair the hooks in Terminal instead.
+
+The matching `hgs acknowledge-input SESSION --json` is available on Linux and
+macOS only in a verified foreground person terminal on that computer, outside
+Zerus agents. Agent descendants, hosted agent calls and unattended or remote
+CLI requests are refused. Its bounded JSON input names `request_id`, `name`,
+`expected_run_id`, `expected_conversation_id`, `original_request_id`,
+`pending_at`, `terminal_binding_id` and `expires_at` (at most six seconds ahead).
+The composer read supplies the exact original request and timestamp in
+`composer.recovery`; review that input before authorizing the command. A JSON
+role or confirmation flag grants no authority. The desktop uses its native
+frontend request authority instead of this CLI terminal path.
+
+Codex and Kimi can also repair a missed acceptance hook from bounded native
+history: the exact full submitted text must occur as a main user input after
+the pending timestamp in that same conversation. The original request, receipt
+digest and run must still match; new sends additionally bind the submitted-text
+hash in the record. This updates native acceptance only and never replays or
+rewrites the original receipt. Completion, tool activity, age, partial text,
+other conversations and absent or unreadable evidence never prove acceptance.
+Codex also requires a typed native turn start after the pending input; a delayed
+user row from an older turn and in-turn steers without this context stay unknown.
+Each Kimi send captures its already-observed native main-user turn floor, bound
+to that request. A prior submit without typed ordering leaves this context
+unknown; a later old prompt or typed hook cannot fill that gap for the new send.
+Only a strictly newer integer native prompt can repair a complete context.
+Legacy or incomplete ordering stays unknown and retains the person's recovery.
+A person-acknowledged unknown input is not cancelled. Before opening its gate,
+Zerus durably retains bounded uncertainty for that provider and conversation,
+across session renames and runs. An indistinguishable later input cannot be
+confirmed by a delayed native row, hook or Claude transcript entry. Different
+complete input can still confirm normally. Incomplete legacy uncertainty,
+unreadable evidence or overflow stays unknown; nothing expires or is replayed.
+Attachments or text outside the bounded native window remain unconfirmed.
+
+The settlement is audited as `person-acknowledged-unknown`, with the original
+request, run, conversation and terminal binding. The record keeps only its
+latest acknowledgment; exact-ID audit reads are byte bounded and never scan
+history. Native `input_seen_at`, clearing evidence and the original delivery
+receipt remain unchanged. Repeating the same acknowledgment returns its receipt
+without another effect; an interrupted reservation remains unknown and is never
+replayed. A later input has its own gate and cannot inherit the earlier release.
 
 While a send to that run from any client (another desktop, a phone, an agent
 or a task) is still in its proof window, both the read and the clear refuse, and
@@ -9392,3 +9577,28 @@ clang -Wno-deprecated-declarations tests/test_macos_session_protocol.c \
 Process coverage includes exact call identity, background tasks, stale generations,
 independent output cursors, targeted stopping and offline/read-position behavior.
 Native DeepSeek tests use a local keyless model rather than paid API requests.
+
+### Team catalog editor receipts
+
+The desktop Teams catalog edits roles, pipelines and templates from `team-plan`.
+Imports stay in the draft until Save; Revert reads the current personal catalog.
+Built-in entries are inherited, and removing an override reveals the built-in
+entry again. Existing teams keep their launch snapshots.
+
+`hgs team catalog snapshot --json` is a bounded, person-only read of the personal
+catalog, the built-ins and their merged view. Its opaque `revision` fingerprints
+the complete personal catalog and the built-in catalog of that CLI. The editor opts into guarded `catalog import`
+with `{schema:1, request_id, expected_revision, catalog}`. The editor
+limits the exact stored pretty JSON plus its final newline to 240,000 bytes;
+a successful save therefore stays within the next snapshot read bound. Legacy bare-catalog
+imports and template commands keep their existing forms. Catalog writers share
+one lock; a changed revision refuses before publication. A duplicate request
+with identical content returns its stored outcome, while different content
+under that UUID refuses.
+
+A private point journal reserves uncertainty before the catalog is published.
+`hgs team catalog receipt UUID --json` only reads that outcome: an interrupted
+save remains uncertain and is never replayed. The desktop keeps the original
+intent and offers Check result, or an explicit confirmed discard of the draft
+followed by a fresh read. No catalog action launches a team or changes a
+running team's permissions.

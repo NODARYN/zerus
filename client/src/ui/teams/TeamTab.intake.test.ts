@@ -143,7 +143,7 @@ it("Add task refuses while Teams are off and a stopped team offers no Add task",
   expect(f.inspector).not.toHaveBeenCalled(); expect(host.querySelector("input.tk-newtitle")).toBeNull();
   expect(notices().map((n) => n.text)).toContain("The chosen team is no longer offered for this project. Nothing was sent.");
   f.setAvailable(true); f.setTeam({ ...teamView, bar: { ...teamView.bar, status: "stopped" } });
-  expect(host.querySelector<HTMLButtonElement>(".team-board-head button")!.disabled).toBe(true);
+  expect([...host.querySelectorAll<HTMLButtonElement>(".team-board-head button")].find((button) => button.textContent === "Add task")!.disabled).toBe(true);
 });
 
 it.each(["backlog", "todo"])("drops a %s card through Send to team", async (stage) => {

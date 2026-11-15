@@ -254,6 +254,8 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] rename <session> <new-full-name> [--archive <id>]
        hgs [@host] archives --json [--bounded]   date-filtered archive pages (JSON stdin); --bounded caps counts at 10,000 and each scan at 25,000 rows
        archive-bounded-pages-v1
+       hgs acknowledge-input <session> --json   person-only keyless release (exact review on stdin)
+       input-acknowledgment-v1
        hgs [@host] archive <session> [--with-children]   move a stopped conversation to Archive
        hgs [@host] terminate <session> [--expected-run-id ID] [--with-children]   stop and keep the conversation in Archive
        hgs [@host] pause <session>|--all       save and gracefully close idle agents
@@ -270,6 +272,8 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs task control plan|execute|status --json   inactive task controls (JSON stdin)
        hgs task mobile-send|mobile-cancel|mobile-done --json   the phone's task actions (mobile)
        Mobile task identity ABI: task-session-identity-v2
+       Mobile task media ABI: task-media-upload-v1
+       Mobile task edit ABI: task-admitted-edit-v1
        hgs [@host] team preview on|off|status | catalog | template | create | list | waiting | status | inbox | queue | cards | journal | current | admit | route | accept | return | reassign | hold | release | cancel | reply | ask | pause-member | resume-member | stop-member | archive-member   Agent Teams (preview; JSON on stdin)
        hgs clip                       PNG from this box's clipboard to stdout (rc 1: no image)
        hgs paste <session> <pane> [client]   the tmux C-v binding; not for hand use
@@ -1095,6 +1099,9 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     }
     if command == "desktop" {
         return crate::desktop::dispatch(&config, &target, args, dry);
+    }
+    if command == "acknowledge-input" {
+        return crate::desktop::input_acknowledgment::dispatch(&config, &target, args, dry);
     }
     // Windows only, before local sessions are enabled, and never forwarded: it
     // enables them on this computer (spec D2). On Unix the word stays a program.
@@ -3989,20 +3996,37 @@ mod tests {
     use super::*;
 
     /// #1355 review: every command whose usage takes a session first accepts
-    /// `--session-id`; only the tray's and tmux's own entry points do not.
+    /// `--session-id`; internal entry points and the local person-only
+    /// acknowledgement keep their own exact session-name contracts.
     #[test]
     fn every_command_that_takes_a_session_first_accepts_a_session_id() {
-        let pattern = regex::Regex::new(r"hgs (?:\[@host\] |@host )?(?:--expect-machine ID )?([a-z_-]+) <session>").unwrap();
-        let mut usage: Vec<&str> = pattern.captures_iter(USAGE).map(|c| c.get(1).unwrap().as_str()).collect();
+        let pattern = regex::Regex::new(
+            r"hgs (?:\[@host\] |@host )?(?:--expect-machine ID )?([a-z_-]+) <session>",
+        )
+        .unwrap();
+        let mut usage: Vec<&str> = pattern
+            .captures_iter(USAGE)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
         usage.sort_unstable();
         usage.dedup();
         assert!(usage.len() >= 25, "{usage:?}");
-        let internal = ["notify", "paste"];
+        let internal = ["notify", "paste", "acknowledge-input"];
         for command in usage.iter().filter(|command| !internal.contains(command)) {
             assert!(SESSION_COMMANDS.contains(command), "{command}");
         }
         // Forms the usage writes without `<session>` first.
-        for command in ["kill", "rename", "archive", "terminate", "pause", "resume", "send-now", "native-ui", "__dsh-ui-url"] {
+        for command in [
+            "kill",
+            "rename",
+            "archive",
+            "terminate",
+            "pause",
+            "resume",
+            "send-now",
+            "native-ui",
+            "__dsh-ui-url",
+        ] {
             assert!(SESSION_COMMANDS.contains(&command), "{command}");
         }
         for command in internal.iter().chain(&["task", "subagent", "ls", "search"]) {

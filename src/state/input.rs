@@ -15,6 +15,7 @@ use std::time::Duration;
 
 pub(crate) mod composer;
 mod diagnostic;
+pub(in crate::state) mod acceptance;
 mod refusal;
 pub(in crate::state) mod outcome;
 pub(crate) mod settle;
@@ -333,6 +334,7 @@ pub(crate) fn input_unconfirmed(record: &Value) -> bool {
     let seen = if record.get("input_seen_at").is_some() { "input_seen_at" } else { "last_event_at" };
     record["input_pending_at"].as_f64().is_some_and(|pending| {
         record[seen].as_f64().unwrap_or(0.0) <= pending
+            && !terminal::acknowledgment::matches(record)
             // The person cleared the composer since (Terminal's Clear input,
             // zerus-wkj9l): what was typed is gone from it, by their choice.
             && record["input_cleared_at"].as_f64().unwrap_or(0.0) <= pending
@@ -365,7 +367,10 @@ pub(crate) fn send_in_flight(record: &Value) -> bool {
     let root = absolute_root().ok();
     in_flight(record, now(), |request| {
         let path = root.as_ref()?.join("input_receipts").join(format!("{request}.json"));
-        serde_json::from_slice(&fs::read(path).ok()?).ok()
+        // Unavailable evidence keeps the recent proof closed, without following
+        // a link or waiting on a special file before the recovery read.
+        let bytes = labels::read_file(&path, 256 * 1024).ok()??;
+        serde_json::from_slice(&bytes).ok()
     })
 }
 
@@ -421,7 +426,8 @@ fn checked_input_gate(
     // zerus-ucck P3c: the request's identities select among sessions that
     // share the label.
     expect(name, run_id, conversation_id)?;
-    let record = read(name)?;
+    let mut record = read(name)?;
+    acceptance::reconcile_locked(&mut record)?;
     checked_bound_record_gate(record, run_id, conversation_id, allow_working)
 }
 
@@ -540,7 +546,7 @@ fn checked_bound_record_gate(
         if string(&record, "activity") == "busy" {
             return Err("previous input has not been confirmed by the agent; a busy agent may keep it queued until it accepts it. Send again once it does, or inspect Terminal".into());
         }
-        return Err("previous input has not been confirmed by the agent; inspect Terminal before sending again".into());
+        return Err("previous input has not been confirmed by the agent; inspect Terminal. If its input is empty, use Release unconfirmed input there, or hgs acknowledge-input from a terminal outside Zerus".into());
     }
     if settings_unconfirmed(&record) {
         return Err(SETTINGS_UNCONFIRMED.into());
@@ -563,7 +569,7 @@ fn settings_unconfirmed(record: &Value) -> bool {
     settings_unconfirmed_metadata(record)
 }
 
-fn settings_unconfirmed_metadata(record: &Value) -> bool {
+pub(super) fn settings_unconfirmed_metadata(record: &Value) -> bool {
     record["settings_unconfirmed_at"]
         .as_f64()
         .is_some_and(|at| record["last_event_at"].as_f64().unwrap_or(0.0) <= at)
@@ -2065,10 +2071,13 @@ fn submit_core(
     }
     // Preserve attachments after any possible input: the agent may read them later.
     let _ = attachments.map(tempfile::TempDir::keep);
+    acceptance::bind_native_context(&mut record, &receipt);
     record["input_pending_at"] = json!(submitted_at);
     // Clear input reads this send's receipt to tell an input still in its proof
     // window from one left uncertain or stuck (zerus-wkj9l.1).
     record["input_pending_request"] = json!(request_id);
+    record["input_pending_digest"] = receipt["digest"].clone();
+    record["input_pending_text_sha256"] = json!(format!("{:x}", Sha256::digest(string(&receipt, "submitted_text").as_bytes())));
     // From this send on the record follows the acceptance rule.
     if record.get("input_seen_at").is_none() {
         record["input_seen_at"] = json!(0.0);
