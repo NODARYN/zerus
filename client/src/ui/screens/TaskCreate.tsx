@@ -47,9 +47,10 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     const request = teamTaskCreation();
     if (!request) return;
     if (request.project !== props.project || !props.accessible) { setTeamTaskCreation(undefined); return; }
-    // Wait for the native editor's handle before applying the choice: its
-    // arrival resets the previous form binding. Recovery retains its team.
-    if (!view()?.handle) return;
+    // Opening may still expose the old handle while its draft save settles.
+    // Apply the choice only after the active handle's binding has settled;
+    // recovery retains its original team.
+    if (newCard.opening() || !view()?.handle) return;
     setCreating(true); setTeam(view()?.recovery ? "" : request.team); setRefusal("");
     setTeamTaskCreation(undefined);
   });

@@ -250,8 +250,10 @@ A card's decisions are **Admit** for a task that waits for admission,
 **Cancel task**. Return and Cancel task ask for a reason. Reassign and Route
 are commands (`hgs team reassign`, `hgs team route`); Route cannot move a
 stage, whose member is chosen by the hand-out. **Add task** opens the New task
-form in the Tasks side panel with this team preselected. A reserved card keeps
-its original destination. Stopped and archived teams offer no Add task.
+form in the Tasks side panel with this team preselected. If a previous draft
+is still saving, the team choice waits for the reopened form's active editor.
+A reserved card keeps its original destination. Stopped and archived teams
+offer no Add task.
 
 On a stopped or archived team's board, a task also shows what the current
 stop recorded: cancellation, release, key clearing, a refusal and its reason,
