@@ -27,7 +27,6 @@ fn team_intake_component_fixture() {
         machine: "00000000-0000-4000-8000-000000000001".into(),
         session: "codex/example/worker".into(),
         session_id: "launch_id:00000000-0000-4000-8000-000000000002".into(),
-        ..Default::default()
     });
     task.record_start(&agent, 1_790_000_002_000).unwrap();
     rows.push(task.view().unwrap());
