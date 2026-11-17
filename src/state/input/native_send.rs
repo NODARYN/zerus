@@ -673,7 +673,11 @@ mod tests {
         // the previous complete core hash and all delivery guards unchanged.
         // The final Enter fence adds only this fresh-record check after the
         // unlocked settle. The actual-CLI interleaving test pins its behavior.
+        // zerus-33caz hands the settle and its Enter fence the exact pasted
+        // text, against which a composer taller than its view is proved.
         for (retained, previous) in [
+            ("settle::settle(terminal, &claim, &pasted, deadline)", "settle::settle(terminal, &claim, deadline)"),
+            ("settle::still(terminal, &claim, &pasted, &shown)", "settle::still(terminal, &claim, &shown)"),
             ("                let current = read(name)?;\n                if !typing_ours(&current, &request_id, string(&record, \"run_id\")) {", "                if !typing_ours(&read(name)?, &request_id, string(&record, \"run_id\")) {"),
             ("                // Root was released during settle: only this fresh record can\n                // fence the remaining Enter. Keep the writer through the key.\n                terminating::check_mutation(&current)?;\n", ""),
             ("match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal)", "match existing(&receipt_path, &digest, name)"),
