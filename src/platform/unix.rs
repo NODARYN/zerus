@@ -1546,10 +1546,16 @@ fn process_started_at(pid: u32) -> Option<Option<u64>> {
 
 #[cfg(target_os = "linux")]
 fn process_started_at(pid: u32) -> Option<Option<u64>> {
-    use std::sync::OnceLock;
+    linux_process_started_at(Path::new("/proc"), pid)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_started_at(proc_root: &Path, pid: u32) -> Option<Option<u64>> {
     // procps: boot time from /proc/stat plus the start in clock ticks, truncated.
-    static BOOT: OnceLock<Option<u64>> = OnceLock::new();
-    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
+    // Clock synchronization can change btime after login. A long-lived reader
+    // must use the same current value as the short-lived launch/hook writers;
+    // caching it makes newly launched agents look like different processes.
+    let stat = match fs::read_to_string(proc_root.join(pid.to_string()).join("stat")) {
         Ok(stat) => stat,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Some(None),
         Err(_) => return None,
@@ -1562,12 +1568,10 @@ fn process_started_at(pid: u32) -> Option<Option<u64>> {
         .nth(19)?
         .parse()
         .ok()?;
-    let boot = (*BOOT.get_or_init(|| {
-        fs::read_to_string("/proc/stat")
-            .ok()?
-            .lines()
-            .find_map(|line| line.strip_prefix("btime ")?.trim().parse().ok())
-    }))?;
+    let boot: u64 = fs::read_to_string(proc_root.join("stat"))
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("btime ")?.trim().parse().ok())?;
     let hertz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
         .ok()
         .filter(|&hz| hz > 0)?;
@@ -2153,6 +2157,33 @@ mod tests {
         assert_eq!(process_start_time(0), Some(String::new()));
         // pid_max is far below this on Linux and macOS.
         assert_eq!(process_start_time(99_999_999), Some(String::new()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn process_start_time_follows_clock_synchronization() {
+        let proc_root = tempfile::tempdir().unwrap();
+        let pid = std::process::id();
+        let pid_dir = proc_root.path().join(pid.to_string());
+        fs::create_dir(&pid_dir).unwrap();
+        fs::copy(format!("/proc/{pid}/stat"), pid_dir.join("stat")).unwrap();
+        let boot_stat = proc_root.path().join("stat");
+        fs::write(&boot_stat, "btime 1000\n").unwrap();
+        let before = linux_process_started_at(proc_root.path(), pid).unwrap().unwrap();
+
+        // The same process, after NTP moves the kernel's boot epoch by a second.
+        fs::write(&boot_stat, "btime 1001\n").unwrap();
+        let after = linux_process_started_at(proc_root.path(), pid).unwrap().unwrap();
+        assert_eq!(after, before + 1);
+
+        // A later clock step in either direction also needs a fresh observation.
+        fs::write(&boot_stat, "btime 999\n").unwrap();
+        assert_eq!(
+            linux_process_started_at(proc_root.path(), pid),
+            Some(Some(before - 1))
+        );
+        fs::write(&boot_stat, "unreadable boot epoch\n").unwrap();
+        assert_eq!(linux_process_started_at(proc_root.path(), pid), None);
     }
 
     #[test]
