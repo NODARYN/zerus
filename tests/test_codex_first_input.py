@@ -93,8 +93,10 @@ class CodexFirstInput(unittest.TestCase):
 
     def test_different_prompt_stays_unconfirmed(self):
         self.bootstrap()
-        current = self.emit(self.prompt(text='A different native prompt'))
-        self.assertEqual(current['input_seen_at'], 0)
+        for text in ('A different native prompt', '',
+                     self.receipt['submitted_text'] + ' '):
+            with self.subTest(text=text):
+                self.assertEqual(self.emit(self.prompt(text=text))['input_seen_at'], 0)
         self.unchanged_receipt()
 
     def test_nonempty_foreign_receipt_is_not_a_bootstrap_exception(self):
