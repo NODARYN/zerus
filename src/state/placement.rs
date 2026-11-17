@@ -176,7 +176,8 @@ impl Scan {
             // state/provider locks exclude a replacement through this unlink.
             queue.verify().map_err(anyhow::Error::msg)?;
             fs::remove_file(queue.path.join(name))?;
-            queue.sync().map_err(anyhow::Error::msg)?;
+            crate::platform::sync_dir(&queue.path)?;
+            queue.verify().map_err(anyhow::Error::msg)?;
         }
         Ok(())
     }
