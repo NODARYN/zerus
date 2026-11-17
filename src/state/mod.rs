@@ -234,6 +234,7 @@ mod worktree_maintenance;
 pub(crate) fn account_models(provider: &str, home: &std::path::Path) -> serde_json::Value {
     effort::account_models(provider, home)
 }
+pub(crate) use effort::{codex_cache_info, CodexCacheInfo};
 /// The DeepSeek account's model catalog from its resident host, read only.
 pub(crate) fn dsh_account_models(home: &std::path::Path) -> serde_json::Value {
     dsh::account_models(home)
