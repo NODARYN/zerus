@@ -3752,6 +3752,9 @@ replaced run is retired. Any ID or label membership written meanwhile, including
 an explicit unassignment, wins and cancels the intent. Existing sessions,
 including children placed before this rule, are never backfilled by listing,
 adoption or the worker.
+If the intent cannot be recorded, launch continues with one warning and the
+ordinary first placement attempt. A placement queue error never stops catalog
+sync, task cutover or label refresh in the worker.
 The general **New session** action inherits the selected session's project,
 computer and matching project folder. For a linked worktree, a verified catalog
 selects the main checkout instead. Choosing another folder, project or computer

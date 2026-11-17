@@ -337,7 +337,7 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
             record["worktree_owner"]=owner;
         }
         if infer_project {
-            placement::prepare(&mut record, &cwd)?;
+            placement::prepare(&mut record, &cwd);
         }
         write(&mut record)?;
         // A launch that replaces a session in the ID layout without keeping

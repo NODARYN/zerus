@@ -14,9 +14,18 @@ const QUEUE: &str = "placement-intents";
 const BYTES: u64 = 64 << 10;
 
 /// Called under the launch's existing writer, before its first binding write.
-/// A failed intent publication is a creation-storage failure, never a silent
-/// successful launch that has lost its placement. No catalog lock is needed.
-pub(crate) fn prepare(record: &mut Value, directory: &Path) -> Result<()> {
+/// Grouping is optional: a storage failure warns once, cleans up this attempt,
+/// and leaves the ordinary launch and its first placement attempt unchanged.
+pub(crate) fn prepare(record: &mut Value, directory: &Path) {
+    if let Err(error) = prepare_inner(record, directory) {
+        if let Some(record) = record.as_object_mut() {
+            record.remove(FIELD);
+        }
+        eprintln!("hgs: initial placement unavailable; launch continues: {error}");
+    }
+}
+
+fn prepare_inner(record: &mut Value, directory: &Path) -> Result<()> {
     let config = Config::load().map_err(|error| error.message)?;
     if !config.dir.join("swarm/catalog.json").is_file() {
         return Ok(());
@@ -35,10 +44,79 @@ pub(crate) fn prepare(record: &mut Value, directory: &Path) -> Result<()> {
     if bytes.len() as u64 > BYTES {
         return Err("Initial placement intent is oversized".into());
     }
-    queue.replace_file(&name, &bytes)?;
-    queue.verify()?;
-    root.verify()?;
+    publish_intent(&root, &queue, &name, &bytes)?;
     record[FIELD] = intent;
+    Ok(())
+}
+
+fn publish_intent(root: &Directory, queue: &Directory, name: &str, bytes: &[u8]) -> Result<()> {
+    let result = (|| {
+        publish_file(queue, name, bytes)?;
+        queue.verify()?;
+        root.verify()
+    })();
+    if let Err(error) = result {
+        // Publication can fail after rename (for example at directory sync).
+        // Retire only this attempt's exact nonce-bearing bytes, through the
+        // original parent even if its pathname has since been replaced.
+        return Err(match discard(queue, name, bytes) {
+            Ok(()) => error,
+            Err(cleanup) => format!("{error}; placement cleanup: {cleanup}"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn publish_file(queue: &Directory, name: &str, bytes: &[u8]) -> Result<()> {
+    queue.replace_file(name, bytes)
+}
+
+#[cfg(windows)]
+fn publish_file(queue: &Directory, name: &str, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    // Directory pins every Windows ancestor against rename/reparse changes.
+    // Unlike the shared publication primitive (which deliberately retains
+    // failed native-effect evidence), this optional metadata owns a temporary
+    // file whose failure path removes its staging name as well.
+    queue.verify()?;
+    let mut file = tempfile::NamedTempFile::new_in(&queue.path).map_err(|e| e.to_string())?;
+    if !crate::platform::verify_private_file(file.as_file()).map_err(|e| e.to_string())? {
+        return Err("The placement file must be private and regular".into());
+    }
+    file.write_all(bytes).map_err(|e| e.to_string())?;
+    file.as_file().sync_all().map_err(|e| e.to_string())?;
+    let file = file
+        .persist_noclobber(queue.path.join(name))
+        .map_err(|e| e.error.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())
+}
+
+fn discard(queue: &Directory, name: &str, bytes: &[u8]) -> Result<()> {
+    let Some(file) = queue.read_private_optional(name)? else {
+        return Ok(());
+    };
+    let mut actual = Vec::new();
+    file.take(BYTES + 1)
+        .read_to_end(&mut actual)
+        .map_err(|e| e.to_string())?;
+    if actual != bytes {
+        return Err("Placement file changed; unrelated file retained".into());
+    }
+    #[cfg(unix)]
+    {
+        let name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
+        // SAFETY: the original directory remains open; this single component
+        // was just read without following links and matched this attempt.
+        if unsafe { libc::unlinkat(queue.descriptor(), name.as_ptr(), 0) } != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+    }
+    #[cfg(windows)]
+    {
+        queue.verify()?;
+        fs::remove_file(queue.path.join(name)).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -51,6 +129,9 @@ fn filename(intent: &Value) -> Option<String> {
         && session_id::canonical(string(intent, "nonce")))
     .then(|| format!("{id}.{run}.json"))
 }
+
+#[cfg(all(test, unix))]
+mod tests;
 
 /// Retains just one directory iterator. At most sixteen pending entries and
 /// one second are attempted per worker round; busy entries stay for a later

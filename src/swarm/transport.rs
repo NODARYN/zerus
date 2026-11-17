@@ -927,10 +927,12 @@ pub fn worker() -> Result<()> {
         match Config::load()
             .map_err(anyhow::Error::from)
             .and_then(|config| {
-                placements.advance(&config, |record, intent, end| {
-                    super::infer_project::complete_pending(&config, record, intent, end)
-                })?;
                 schedule.round(&mut Live(&config))?;
+                if let Err(error) = placements.advance(&config, |record, intent, end| {
+                    super::infer_project::complete_pending(&config, record, intent, end)
+                }) {
+                    eprintln!("hgs swarm: initial placement remains pending: {error:#}");
+                }
                 if let Err(error)=cutover.advance(&config) {
                     eprintln!("hgs swarm: the bounded task cutover pass remains pending: {error:#}");
                 }

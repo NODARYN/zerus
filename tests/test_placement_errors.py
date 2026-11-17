@@ -19,7 +19,16 @@ class BlockedQueue:
         parents = self.catalog()
         queue = self.state / 'placement-intents'
         queue.write_text('fixture: keep this unrelated blocking file')
-        name = self.launch('blocked-queue', parents['work'])
+        if hasattr(self, 'agent_env'):
+            name = self.named('blocked-queue')
+            result = subprocess.run([str(child.HGS), self.agent, str(self.folder),
+                                     '-n', 'blocked-queue', '-d', '--new'],
+                                    env=dict(self.as_child_of(parents['work']), **self.agent_env),
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stderr.count('hgs: initial placement unavailable; launch continues:'), 1)
+        else:
+            name = self.launch('blocked-queue', parents['work'])
         record = self.binding(name)
         self.assertNotIn('initial_placement', record)
         self.assertEqual(self.project_of(name), 'work', 'ordinary first placement was lost')
@@ -80,4 +89,32 @@ class BlockedQueueWorker(SwarmFixture):
             finally:
                 if worker.poll() is None:
                     worker.terminate()  # Only this exact worker created above.
+                worker.wait(timeout=10)
+
+    def test_a_broken_queue_does_not_skip_local_work_when_no_peer_is_due(self):
+        # No join: the product store has no peer to sync. This reaches the
+        # local refresh after the optional pass, independently of sync_peer's
+        # own local refresh when it does contact a peer.
+        self.assertFalse(self.call('a', 'get')['peers'])
+        state = self.root / 'a/state'
+        state.mkdir(exist_ok=True)
+        queue = state / 'placement-intents'
+        queue.write_text('fixture: broken queue')
+        local = self.root / 'a/swarm/session-labels-cache/attempt-000.json'
+        local.unlink(missing_ok=True)  # Same explicit private cold-cache seam.
+        env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(state))
+        log = self.root / 'worker.log'
+        with log.open('w') as output:
+            worker = subprocess.Popen([str(test_swarm.HGS), 'swarm', 'worker'], env=env,
+                                      stdout=output, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 8
+                while not local.exists() and time.monotonic() < deadline:
+                    self.assertIsNone(worker.poll(), log.read_text())
+                    time.sleep(.05)
+                self.assertTrue(local.exists(), 'placement error skipped local work: ' + log.read_text())
+                self.assertIn('hgs swarm: initial placement remains pending:', log.read_text())
+            finally:
+                if worker.poll() is None:
+                    worker.terminate()
                 worker.wait(timeout=10)
