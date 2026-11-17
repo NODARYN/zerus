@@ -549,10 +549,10 @@ thread_local! { static MODEL_CACHE_PARSES: std::cell::Cell<usize> = const { std:
 /// Codex's models_cache.json (hundreds of KiB) for this record's account. Every
 /// listed Codex session reads its options and catalog from it, so one listing
 /// parsed it twice per session. Reuse the parse while the file is unchanged.
-fn codex_models(record: &Value) -> Option<std::sync::Arc<Value>> {
+fn codex_models(home: &Path) -> Option<std::sync::Arc<Value>> {
     type Cached = (u64, Option<SystemTime>, std::sync::Arc<Value>);
     static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Cached>>> = OnceLock::new();
-    let path = agent_home(record).join("models_cache.json");
+    let path = home.join("models_cache.json");
     let file = File::open(&path).ok()?;
     let meta = file.metadata().ok()?;
     let modified = meta.modified().ok();
@@ -575,10 +575,26 @@ fn codex_models(record: &Value) -> Option<std::sync::Arc<Value>> {
     Some(value)
 }
 
+#[derive(Default, PartialEq)]
+pub(crate) struct CodexCacheInfo {
+    pub(crate) client_version: Option<String>,
+    pub(crate) fetched_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub(crate) fn codex_cache_info(home: &Path) -> CodexCacheInfo {
+    let Some(cache) = codex_models(home) else {
+        return CodexCacheInfo::default();
+    };
+    CodexCacheInfo {
+        client_version: cache["client_version"].as_str().map(str::to_owned),
+        fetched_at: cache["fetched_at"].as_str().and_then(|date| date.parse().ok()),
+    }
+}
+
 fn options(record: &Value, model: &str) -> Vec<String> {
     match string(record, "agent") {
         "codex" => {
-            let Some(cache) = codex_models(record) else {
+            let Some(cache) = codex_models(&agent_home(record)) else {
                 return vec![];
             };
             cache["models"]
@@ -674,7 +690,7 @@ fn catalog(record: &Value) -> Vec<ModelOption> {
     }
     let mut result = Vec::new();
     if string(record, "agent") == "codex" {
-        let parsed = codex_models(record);
+        let parsed = codex_models(&agent_home(record));
         if let Some(models) = parsed.as_ref().and_then(|v| v["models"].as_array()) {
             let mut entries: Vec<_> = models.iter().take(256).collect();
             // Codex's ModelsManager stably sorts by its signed i32 priority.
