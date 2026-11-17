@@ -260,6 +260,7 @@ pub(crate) fn worktree_catalog_until(path: &std::path::Path, deadline: std::time
 }
 mod launch_project;
 pub(crate) use launch_project::with_launch_binding;
+pub(crate) mod placement;
 mod session_project;
 pub(crate) use session_project::{with_pinned_session_binding, with_session_project_binding, Pinned};
 pub(crate) mod launches;

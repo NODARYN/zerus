@@ -3741,11 +3741,17 @@ over folder inference, so a session tree stays together. A parent whose project
 no longer exists gives the child an explicit Inbox membership. A parent in Inbox,
 without a membership or with an unresolved project choice leaves the child to
 folder inference, as does a claimed, adopted or forwarded parent. The membership
-is written like a fork's: after the child's binding is saved, retrying a busy
+is first attempted after the child's binding is saved, retrying a busy
 catalog for up to 3 seconds without holding the session state or provider
-binding locks, and only while the child's binding is still the same run and
-conversation. A child name that already has a membership keeps it. Existing
-sessions, including children placed before this rule, are never moved.
+binding locks. Creation also durably records an initial-placement intent,
+including the session ID, run and original parent link. If that first attempt
+cannot finish, this computer's catalog worker retries the pending queue in
+bounded batches. Folder inference for a new session uses the same queue.
+Only the exact unchanged creation binding can complete its intent; an ended or
+replaced run is retired. Any ID or label membership written meanwhile, including
+an explicit unassignment, wins and cancels the intent. Existing sessions,
+including children placed before this rule, are never backfilled by listing,
+adoption or the worker.
 The general **New session** action inherits the selected session's project,
 computer and matching project folder. For a linked worktree, a verified catalog
 selects the main checkout instead. Choosing another folder, project or computer

@@ -336,6 +336,9 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
         if let Some(owner)=super::worktree_lifecycle::for_folder(std::path::Path::new(string(&record,"launch_dir"))) {
             record["worktree_owner"]=owner;
         }
+        if infer_project {
+            placement::prepare(&mut record, &cwd)?;
+        }
         write(&mut record)?;
         // A launch that replaces a session in the ID layout without keeping
         // its ID (a retry, or a new session over a stopped one) is written at
