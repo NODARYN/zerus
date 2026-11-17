@@ -189,6 +189,14 @@ class PendingPlacement(child.Placement, child.Base):
         old = self.binding(name)
         self.end(name)
         self.until(lambda: not self.binding(name), 'the old supervisor did not retire')
+        # Record retirement precedes the shell/tmux teardown. A new-only
+        # launch checks BOTH, so wait for this exact private terminal too.
+        def terminal_gone():
+            result = subprocess.run([str(self.bin / 'tmux'), 'has-session', '-t', '=' + name],
+                                    env=self.env, capture_output=True, text=True)
+            self.assertIn(result.returncode, (0, 1), result.stderr)
+            return result.returncode == 1
+        self.until(terminal_gone, 'the old private terminal did not retire')
         replacement = self.launch('replaced', None)
         current = self.binding(replacement)
         self.assertNotEqual(current['session_id'], old['session_id'])
