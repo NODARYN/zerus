@@ -8,6 +8,7 @@
   .nt-page-head h1 { font-size: var(--fs-lg); font-weight: 600; }
   .nt-page-head .icon-btn { margin-left: auto; }
   .nt-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 16px; padding: 16px 20px 0; font-size: var(--fs-sm); }
+  .nt-body > * { flex-shrink: 0; }
   .nt-section { display: flex; flex-direction: column; gap: 12px; }
   .nt-section + .nt-section { padding-top: 16px; border-top: 1px solid var(--z-color-divider); }
   .nt-section h2, .nt-templates > b { font-size: var(--fs-sm); font-weight: 600; color: var(--z-color-text); }
@@ -18,11 +19,16 @@
   .nt-inline > .field { flex: 1 1 220px; min-width: 0; }
   .nt-hint { color: var(--z-color-muted); font-size: var(--fs-xs); line-height: 1.5; }
   .nt-templates { margin: 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-  .nt-templates legend { margin-bottom: 8px; padding: 0; font-weight: 600; }
+  .nt-templates legend { display: flex; align-items: center; gap: 12px; width: 100%; margin-bottom: 8px; padding: 0; font-weight: 600; }
+  .nt-templates legend > .btn { margin-left: auto; flex: none; }
+  .nt-start { margin: 0; padding: 0; border: 0; min-width: 0; }
+  .nt-start legend { padding: 0; margin-bottom: 12px; font-weight: 600; }
+  .nt-start .check { align-items: flex-start; }
+  .nt-start .check input { flex: none; margin-top: 2px; }
   .nt-permissions { margin: 10px 0 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
   .nt-permissions legend { margin-bottom: 4px; padding: 0; font-weight: 600; }
   .nt-template-list { display: flex; flex-direction: column; gap: 6px; max-height: 210px; overflow: auto; padding: 2px; margin: -2px; }
-  .nt-template-row { display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 10px 12px; text-align: left; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); color: var(--z-color-text); }
+  .nt-template-row { display: flex; flex: none; align-items: center; gap: 10px; min-height: 54px; padding: 10px 12px; text-align: left; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); color: var(--z-color-text); }
   .nt-template-row:hover { background: var(--z-color-card-hover); }
   .nt-template-row.on { border-color: var(--z-color-card-selected-border); background: var(--z-color-card-selected); }
   .nt-template-row input { margin: 0; flex: none; width: 14px; height: 14px; accent-color: var(--z-color-accent); }
@@ -43,7 +49,8 @@
   .nt-howto { display: flex; flex-direction: column; gap: 8px; }
   .nt-howto-toggle { align-self: flex-start; }
   .nt-howto-steps { font-size: var(--fs-xs); color: var(--z-color-muted); }
-  .nt-foot { position: sticky; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: 10px; flex: none; padding: 12px 0 16px; border-top: 1px solid var(--z-color-divider); background: var(--z-color-surface); }
+  /* A sibling of the scroll body, so enlarged captions cannot cover fields. */
+  .nt-foot { display: flex; flex-direction: column; gap: 10px; flex: none; padding: 12px 20px 16px; border-top: 1px solid var(--z-color-divider); background: var(--z-color-surface); }
   .nt-foot-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .nt-foot-row > .nt-hint { flex: 1 1 100%; }
   .nt-foot-row > .btn { height: auto; min-height: var(--control-h); white-space: normal; }
@@ -54,5 +61,6 @@
     .nt-caps { grid-template-columns: 110px minmax(0, 1fr); }
     .nt-body { padding-left: 14px; padding-right: 14px; }
     .nt-page-head { padding-left: 14px; padding-right: 14px; }
+    .nt-foot { padding-left: 14px; padding-right: 14px; }
   }
 }

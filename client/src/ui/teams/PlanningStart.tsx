@@ -3,10 +3,10 @@ import { tr } from "../../i18n";
 
 export function PlanningStart(props: { planning: boolean; disabled: boolean; change: (value: boolean) => void }) {
   const name = createUniqueId();
-  return <fieldset class="nt-section" disabled={props.disabled}>
+  return <fieldset class="nt-section nt-start" disabled={props.disabled}>
     <legend>{tr("How to start")}</legend>
-    <label><input type="radio" name={name} checked={!props.planning} onChange={() => props.change(false)} /> {tr("Start with a task queue")}</label>
-    <label><input type="radio" name={name} checked={props.planning} onChange={() => props.change(true)} data-start-planning /> {tr("Plan a goal first")}</label>
+    <label class="check"><input type="radio" name={name} checked={!props.planning} onChange={() => props.change(false)} /> {tr("Start with a task queue")}</label>
+    <label class="check"><input type="radio" name={name} checked={props.planning} onChange={() => props.change(true)} data-start-planning /> {tr("Plan a goal first")}</label>
     <Show when={props.planning}><p class="nt-hint">{tr("Only the lead starts. Other members and the integration branch wait for your approval of the initial plan.")}</p></Show>
   </fieldset>;
 }

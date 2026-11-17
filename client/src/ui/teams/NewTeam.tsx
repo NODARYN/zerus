@@ -140,6 +140,11 @@ export interface NewTeamProps {
 export function NewTeam(props: NewTeamProps): JSX.Element {
   const templateGroup = createUniqueId();
   const [templateId, setTemplateId] = createSignal(props.catalog?.templates[0]?.id ?? "");
+  // The dialog can open before its catalog read returns. Apply the same
+  // initial default then, without replacing a choice on a later refresh.
+  createEffect(on(() => props.catalog, (catalog) => {
+    if (!templateId()) setTemplateId(catalog?.templates[0]?.id ?? "");
+  }));
   const [name, setName] = createSignal("");
   const [goal, setGoal] = createSignal("");
   const [planning, setPlanning] = createSignal(false);
@@ -301,12 +306,13 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     finally { setSaving(false); }
   };
 
-  return (
+  return (<>
     <div class="nt-body" data-new-team-form>
       <Show when={props.catalogError}><div class="notice danger nt-error" role="alert"><Icon name="triangle-alert" size={16} /><span>{withoutCode(props.catalogError!)}</span></div></Show>
-      <fieldset class="nt-templates">
-        <legend>{tr("Template")}</legend>
-        <Show when={props.onOpenCatalog}><button type="button" class="btn ghost small" disabled={locked()} onClick={() => props.onOpenCatalog?.()}>{tr("Catalog")}</button></Show>
+      <fieldset class="nt-templates" aria-labelledby={`${templateGroup}-title`}>
+        <legend><span id={`${templateGroup}-title`}>{tr("Template")}</span>
+          <Show when={props.onOpenCatalog}><button type="button" class="btn ghost small" disabled={locked()} onClick={() => props.onOpenCatalog?.()}>{tr("Catalog")}</button></Show>
+        </legend>
         <div class="nt-template-list">
           <For each={props.catalog?.templates ?? []}>
             {(candidate) => (
@@ -408,10 +414,10 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
         <NewTeamIntroSteps planning={planning()} />
         <NewTeamHowTo open={howto()} onToggle={setHowto} />
       </section>
-      <NewTeamFooter busy={props.busy || creating() || sendingCreate()} createWhy={createWhy()} error={shownError()} canSave={!!template() && !locked() && !unknownConfirmed()}
-        saving={saving()} showCreate={!intentCall() && !sendingCreate()} planning={planning()} onSaveTemplate={() => void save()} onCancel={props.onClose} onCreate={() => void create()} />
     </div>
-  );
+    <NewTeamFooter busy={props.busy || creating() || sendingCreate()} createWhy={createWhy()} error={shownError()} canSave={!!template() && !locked() && !unknownConfirmed()}
+      saving={saving()} showCreate={!intentCall() && !sendingCreate()} planning={planning()} onSaveTemplate={() => void save()} onCancel={props.onClose} onCreate={() => void create()} />
+  </>);
 }
 
 /** The dialog the rail and the command table open; the catalog is read on open. */

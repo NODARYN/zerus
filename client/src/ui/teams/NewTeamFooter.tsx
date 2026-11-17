@@ -33,7 +33,7 @@ export function NewTeamFooter(props: NewTeamFooterProps) {
         </div>
       </Show>
       <div class="nt-foot-row">
-        <span class="nt-hint grow">{props.planning ? tr("Nothing starts until you press Start planning.") : tr("Nothing is created until you press Create team.")}</span>
+        <span class="nt-hint">{props.planning ? tr("Nothing starts until you press Start planning.") : tr("Nothing is created until you press Create team.")}</span>
         <button type="button" class="btn nt-save" disabled={!props.canSave || props.saving || props.busy}
           onClick={props.onSaveTemplate}>{tr("Save as template")}</button>
         <Show when={props.showCreate !== false}>
