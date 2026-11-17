@@ -54,7 +54,9 @@ class BlockedQueueWorker(SwarmFixture):
         queue = state / 'placement-intents'
         queue.write_text('fixture: broken queue')
         local = self.root / 'a/swarm/session-labels-cache/attempt-000.json'
-        self.assertFalse(local.exists(), 'fixture unexpectedly ran a local refresh')
+        # Explicit cold-cache fault seam: no handcrafted label-cache row.
+        # Only the product worker may publish the next local attempt.
+        local.unlink(missing_ok=True)
         env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(state))
         log = self.root / 'worker.log'
         with log.open('w') as output:
