@@ -995,6 +995,9 @@ Favorites stay in their existing project and parent hierarchy through collapsed
 groups, retaining only necessary ancestor context; unrelated siblings stay
 collapsed. A favorite's own child toggle independently shows or hides its native
 subagents and child sessions, even below a collapsed ancestor or project. Favorites
+also keep the necessary ancestor rows visible. These context rows start collapsed,
+but their own toggle can explicitly open their branch without opening the higher
+ancestor or its other branches. Favorites
 never override state, search, machine, project, account or folder filters or
 change status and filter counts. The local `sessions/favorites` preference uses
 canonical machine UUID plus durable session ID, surviving rename and restart
@@ -1013,8 +1016,10 @@ tile, its parent's account mark, its name and status, the summary as its
 tooltip) and never expands; the expand button's place stays empty, so its
 status lines up with the rows around it (owner, 2026-11-08). This
 device remembers a collapsed parent across relaunches by its computer's machine
-UUID and session ID (`sessions/collapsedTeams`, at most 2048 parents, the oldest
-forgotten first), so a rename, resume or restart keeps the choice; a parent
+UUID and session ID (`sessions/collapsedTeams`). Explicit expansion is remembered
+in `sessions/expandedTeams`, including on retained ancestors of favorites. Each
+list keeps at most 2048 parents, the oldest forgotten first, so a rename, resume
+or restart keeps the choice; a parent
 without those IDs keeps it for this window only. A child row's compact or full
 form is remembered like any row's. Nesting stops after eight levels; a deeper child starts at top
 level again. A child whose parent is not shown above it stays at top level with

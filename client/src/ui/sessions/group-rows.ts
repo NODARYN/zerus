@@ -77,6 +77,8 @@ export interface ListInput {
   parentKey?: (s: Session) => string | undefined;
   /** A parent whose child sessions are collapsed. */
   teamCollapsed?: (key: string) => boolean;
+  /** An explicit own expansion that can open a retained ancestor's branch. */
+  teamExpanded?: (key: string) => boolean;
   /** Favorites bypass ancestor collapse, then use their own child toggle, after every ordinary filter. */
   favorite?: (s: Session) => boolean;
   /**
@@ -180,7 +182,7 @@ export function groupRows(input: ListInput): Row[] {
   const teamParents = agentTeamParents(input.agentTeams ?? new Map());
   const parentKey = teamParents.size ? (s: Session) => teamParents.get(s.key) ?? input.parentKey?.(s) : input.parentKey;
   const out: Row[] = [];
-  const card = (s: Session, extra: Partial<Extract<Row, { type: "card" }>> = {}, showChildren = true) => {
+  const card = (s: Session, extra: Partial<Extract<Row, { type: "card" }>> = {}, collapsed = !!input.teamCollapsed?.(s.key)) => {
       const current = currentChildren(s, input.online(s));
       const roster = input.children === false ? [] : (input.roster?.(s) ?? s.subagents ?? []);
       const kids = roster.filter((child) =>
@@ -192,8 +194,8 @@ export function groupRows(input: ListInput): Row[] {
       // One counter and one toggle for a parent's subagents and child
       // sessions (owner, 2026-11-07, zerus-sa9qn.16): the toggle shows or
       // hides both, and is remembered across relaunches (zerus-sa9qn.15).
-      const team = withSubagents(extra.team, kids, !!input.teamCollapsed?.(s.key));
-      const expanded = showChildren && kids.length > 0 && !team?.collapsed;
+      const team = withSubagents(extra.team, kids, collapsed);
+      const expanded = kids.length > 0 && !team?.collapsed;
       const changed = kids.length !== roster.length || kids.some((child, index) => child !== roster[index]);
       const member = input.agentTeams?.get(s.key);
       const presentation = agentTeamSession(s, member, input.online(s));
@@ -307,14 +309,15 @@ export function groupRows(input: ListInput): Row[] {
     for (const { s, depth, parent, last } of nodes) {
       const onlyFavorites = parent ? hidden.has(parent) : favoritesOnly;
       const isFavorite = !!input.favorite?.(s);
-      if (onlyFavorites) {
-        // A favorite's own children follow its saved toggle, even when an
-        // ancestor or project is collapsed. Other retained ancestors stay shut.
-        if (!isFavorite) hidden.add(s.key);
-        if (!retained.has(s.key)) continue;
+      if (onlyFavorites && !retained.has(s.key)) {
+        hidden.add(s.key);
+        continue;
       }
       const counts = teams.get(s.key);
-      const collapsed = !!counts && !!input.teamCollapsed?.(s.key);
+      // Retained context starts shut, but its own explicit expansion works
+      // independently of the ancestor/project that hid the surrounding rows.
+      const collapsed = !!input.teamCollapsed?.(s.key)
+        || onlyFavorites && !isFavorite && !input.teamExpanded?.(s.key);
       if (collapsed) hidden.add(s.key);
       const from = !parent && s.parent ? { fromParent: { name: s.parent.name, key: parentKey?.(s) } } : {};
       const container = containers?.get(s.key);
@@ -324,7 +327,7 @@ export function groupRows(input: ListInput): Row[] {
         out.push(row); connect(row, parent);
         continue;
       }
-      connect(card(s, { depth, parentKey: parent, lastChild: parent ? last : undefined, team: counts && { ...counts, collapsed }, ...from }, !onlyFavorites || isFavorite), parent);
+      connect(card(s, { depth, parentKey: parent, lastChild: parent ? last : undefined, team: counts && { ...counts, collapsed }, ...from }, collapsed), parent);
     }
   };
   const cards = (listed: readonly Session[], project = "", all: readonly Session[] = listed, favoritesOnly = false) =>
