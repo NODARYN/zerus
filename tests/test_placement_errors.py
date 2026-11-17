@@ -79,7 +79,8 @@ class BlockedQueueWorker(SwarmFixture):
                     rows = self.call('a', 'get')['organization']['projects']
                     synced = any(row['id'] == project and row['name'] == desired['projects'][0]['name']
                                  for row in rows)
-                    if synced and local.exists():
+                    if (synced and local.exists() and
+                            'hgs swarm: initial placement remains pending:' in log.read_text()):
                         break
                     time.sleep(.05)
                 self.assertTrue(synced, 'broken placement queue stopped actual cross-node catalog sync: ' + log.read_text())
