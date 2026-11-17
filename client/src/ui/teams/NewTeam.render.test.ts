@@ -3,7 +3,7 @@
 // pipelines and settings, a Git folder checked before Create can run, and Save
 // as template.
 import { afterEach, expect, it, vi } from "vitest";
-import { createComponent } from "solid-js";
+import { createComponent, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import { NewTeam } from "./NewTeam";
 import { catalog } from "./fixtures";
@@ -15,13 +15,15 @@ function setup(overrides: Partial<Parameters<typeof NewTeam>[0]> = {}) {
   const host = document.createElement("div");
   document.body.append(host);
   const created: unknown[] = [];
+  const [shownCatalog, setCatalog] = createSignal("catalog" in overrides ? overrides.catalog : catalog);
   dispose = render(() => createComponent(NewTeam, {
-    catalog, busy: false, machineId: "00000000-0000-4000-8000-0000000000aa",
+    busy: false, machineId: "00000000-0000-4000-8000-0000000000aa",
     defaultProject: "example-project", defaultFolder: "/workspace/example",
     onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
     onCreate: async (input) => { created.push(input); return { outcome: "done", receipt: {}, request_id: input.request_id }; }, onSaveTemplate: async () => {}, onClose: () => {}, ...overrides,
+    get catalog() { return shownCatalog(); },
   }), host);
-  return { host, created };
+  return { host, created, setCatalog };
 }
 
 const find = (host: HTMLElement, label: string) =>
@@ -137,4 +139,35 @@ it("keeps the Catalog entry disabled while creation is locked", () => {
   const entry = host.querySelector<HTMLButtonElement>(".nt-templates button")!;
   expect(entry.disabled).toBe(true); entry.click();
   expect(opened).not.toHaveBeenCalled();
+});
+
+
+it("selects the existing default when the initial catalog arrives later without starting anything", async () => {
+  const check = vi.fn();
+  const { host, created, setCatalog } = setup({ catalog: undefined, onCheckFolder: check });
+  expect(host.querySelector("[data-template]")).toBeNull();
+  setCatalog(catalog);
+  await vi.waitFor(() => expect(host.querySelector<HTMLInputElement>("[data-template] input")?.checked).toBe(true));
+  expect(host.textContent).toContain("Developer × 2");
+  expect(find(host, "Create team").disabled).toBe(true);
+  expect(check).not.toHaveBeenCalled();
+  expect(created).toEqual([]);
+});
+
+it("selects the first template after an initially empty catalog", async () => {
+  const { host, setCatalog } = setup({ catalog: { ...catalog, templates: [] } });
+  setCatalog(catalog);
+  await vi.waitFor(() => expect(host.querySelector<HTMLInputElement>("[data-template] input")?.checked).toBe(true));
+});
+
+it("preserves an explicit template across reorder and removal instead of silently choosing another", async () => {
+  const other = { ...catalog.templates[0], id: "small", name: "Small" };
+  const { host, setCatalog } = setup({ catalog: { ...catalog, templates: [...catalog.templates, other] } });
+  host.querySelector<HTMLInputElement>("[data-template='small'] input")!.click();
+  setCatalog({ ...catalog, templates: [other, ...catalog.templates] });
+  expect(host.querySelector<HTMLInputElement>("[data-template='small'] input")!.checked).toBe(true);
+  setCatalog(catalog);
+  expect(host.querySelector("[data-template] input:checked")).toBeNull();
+  expect(host.textContent).toContain("Choose a template.");
+  expect(find(host, "Create team").disabled).toBe(true);
 });
