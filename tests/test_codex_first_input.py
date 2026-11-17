@@ -153,6 +153,14 @@ class CodexFirstInput(unittest.TestCase):
         self.assertEqual(self.emit(self.prompt())['input_seen_at'], 0)
         self.unchanged_receipt()
 
+    def test_background_journal_cannot_stand_in_for_main_start(self):
+        self.bound_without_start()
+        self.emit(dict(self.start, agent_id='native-child'))
+        self.assertEqual(self.emit(self.prompt())['input_seen_at'], 0)
+        self.native_user_row()
+        self.assertEqual(self.reconciled_record()['input_seen_at'], 0)
+        self.unchanged_receipt()
+
     def test_reconcile_needs_this_runs_product_written_main_start(self):
         self.bound_without_start()
         self.native_user_row()
