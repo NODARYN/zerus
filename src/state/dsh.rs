@@ -1021,6 +1021,7 @@ pub(crate) fn launch(
     if let Some(parent) = parent {
         record["parent"] = parent;
     }
+    placement::prepare(&mut record, &cwd);
     ensure_host(&record)?;
     let (generation, mode) = create_session(&mut record)?;
     if let Some((model, effort)) = defaults {
