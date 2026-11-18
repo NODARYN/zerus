@@ -78,14 +78,22 @@ pub(crate) struct Connection {
     host: HelloReply,
     next: u64,
     /// Ends the connection at an observation's deadline ([`Self::hello_until`]).
-    _deadline: Option<Deadline>,
+    deadline: Option<Deadline>,
 }
 
 /// One absolute deadline over a connection (zerus-5sl7r): at `until` its link
 /// is shut down, so a read or write still waiting then ends at once, however
 /// the host spread its answer over reads that each came in time, and nothing
 /// answers on it later. Dropped earlier, it ends without effect.
-struct Deadline(#[allow(dead_code)] mpsc::Sender<()>);
+///
+/// A frame that was read by then but is taken only after it (its read
+/// completed as the link was shut down, or the reader ran late) is not taken
+/// either: each frame on the connection is checked against `until` once it is
+/// decoded ([`Self::passed`], zerus-xngdd).
+struct Deadline {
+    until: Instant,
+    _disarm: mpsc::Sender<()>,
+}
 
 impl Deadline {
     fn arm(link: Arc<dyn Link>, until: Instant) -> io::Result<Self> {
@@ -98,8 +106,22 @@ impl Deadline {
                     link.shutdown();
                 }
             })?;
-        Ok(Self(disarm))
+        Ok(Self {
+            until,
+            _disarm: disarm,
+        })
     }
+
+    /// Whether the deadline has passed: a frame decoded now is late.
+    fn passed(&self) -> bool {
+        Instant::now() >= self.until
+    }
+}
+
+/// The answer to a request on a connection whose deadline passed before the
+/// answer was taken.
+fn late() -> ErrorBody {
+    lost("the observation's deadline passed before its answer was taken")
 }
 
 impl Connection {
@@ -127,7 +149,13 @@ impl Connection {
             ClientError::Connect(format!("the observation's deadline: {error}"))
         })?;
         let mut connection = Self::hello_within(link, role, left)?;
-        connection._deadline = Some(deadline);
+        // The hello answer, however it was read, counts only by the deadline.
+        if deadline.passed() {
+            return Err(ClientError::Connect(
+                "the observation's deadline passed before its hello answer was taken".into(),
+            ));
+        }
+        connection.deadline = Some(deadline);
         Ok(connection)
     }
 
@@ -173,7 +201,7 @@ impl Connection {
                 link,
                 host,
                 next: 1,
-                _deadline: None,
+                deadline: None,
             }),
             Ok(HelloAnswer::Refused(error)) => Err(ClientError::Refused(error)),
             Err(error) => Err(ClientError::Protocol(format!(
@@ -203,6 +231,10 @@ impl Connection {
             .read_frame()
             .map_err(lost)?
             .ok_or_else(|| lost("the host closed the connection"))?;
+        // An answer, however it was read, counts only by the deadline.
+        if self.deadline.as_ref().is_some_and(Deadline::passed) {
+            return Err(late());
+        }
         if frame.kind != Kind::Json {
             return Err(lost("the host answered with stream data"));
         }
@@ -771,6 +803,151 @@ mod tests {
             serde_json::json!({"ok": true})
         );
         server.join().unwrap();
+    }
+
+    /// zerus-xngdd, the review's buffered-frame probe over a Unix socket
+    /// pair with the production frame decoder: a frame read by the deadline
+    /// but taken only after it is refused, for the hello and for a request.
+    /// The reader here holds a frame it read until the deadline has shut the
+    /// link, as a pipe read that completes while its cancellation runs. The
+    /// probe's other stages stay as they were: a host that spreads its answer
+    /// past the deadline ends there, and one that spreads it within the
+    /// deadline is answered (a 1 s budget for about 400 ms of pieces).
+    #[cfg(unix)]
+    #[test]
+    fn a_frame_taken_after_the_deadline_is_refused_though_it_was_read_in_time() {
+        use std::{
+            io::Write,
+            net::Shutdown,
+            os::unix::net::UnixStream,
+            sync::atomic::{AtomicBool, AtomicU64, Ordering},
+        };
+        struct Held {
+            io: UnixStream,
+            shut: Arc<AtomicBool>,
+            /// The deadline and the read whose frame is held until the link
+            /// is shut.
+            hold: Option<(Instant, u64)>,
+            reads: AtomicU64,
+        }
+        impl Link for Held {
+            fn read_frame(&self) -> Result<Option<super::super::protocol::Frame>, FrameError> {
+                let n = self.reads.fetch_add(1, Ordering::Relaxed);
+                let frame = super::super::protocol::read_frame(&mut &self.io)?;
+                if let Some((until, nth)) = self.hold {
+                    if frame.is_some() && n == nth {
+                        let ceiling = until + Duration::from_millis(500);
+                        while !self.shut.load(Ordering::Acquire) && Instant::now() < ceiling {
+                            thread::sleep(Duration::from_millis(2));
+                        }
+                        assert!(self.shut.load(Ordering::Acquire));
+                        assert!(Instant::now() >= until);
+                    }
+                }
+                Ok(frame)
+            }
+            fn write_frame(&self, kind: Kind, payload: &[u8]) -> Result<(), FrameError> {
+                super::super::protocol::write_frame(&mut &self.io, kind, payload)
+            }
+            fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+                self.io.set_read_timeout(timeout)
+            }
+            fn shutdown(&self) {
+                let _ = self.io.shutdown(Shutdown::Both);
+                self.shut.store(true, Ordering::Release);
+            }
+        }
+        fn pieces(peer: &mut UnixStream, answer: &impl serde::Serialize, pace: Duration) -> bool {
+            let mut bytes = Vec::new();
+            super::super::protocol::write_json(&mut bytes, Kind::Json, answer).unwrap();
+            for part in [&bytes[..4], &bytes[4..5], &bytes[5..]] {
+                thread::sleep(pace);
+                if peer.write_all(part).is_err() {
+                    return false;
+                }
+            }
+            true
+        }
+        for (stage, hello_pace, answer_pace, budget, hold) in [
+            ("late fragmented hello", 165, 0, 300, None),
+            ("late fragmented answer", 0, 165, 300, None),
+            ("legitimate fragmented round trip", 63, 68, 1000, None),
+            (
+                "buffered hello taken after the deadline",
+                0,
+                0,
+                230,
+                Some(0),
+            ),
+            (
+                "buffered answer taken after the deadline",
+                0,
+                0,
+                230,
+                Some(1),
+            ),
+        ] {
+            let (client, mut peer) = UnixStream::pair().unwrap();
+            let shut = Arc::new(AtomicBool::new(false));
+            let server = thread::spawn(move || {
+                if !matches!(super::super::protocol::read_frame(&mut peer), Ok(Some(_))) {
+                    return;
+                }
+                let hello = HelloAnswer::Accepted(identity());
+                if pieces(&mut peer, &hello, Duration::from_millis(hello_pace))
+                    && matches!(super::super::protocol::read_frame(&mut peer), Ok(Some(_)))
+                {
+                    let answer = Response::ok(1, &serde_json::json!({"system": "fixture"}));
+                    pieces(&mut peer, &answer, Duration::from_millis(answer_pace));
+                }
+            });
+            let started = Instant::now();
+            let until = started + Duration::from_millis(budget);
+            let link = Held {
+                io: client,
+                shut: shut.clone(),
+                hold: hold.map(|nth| (until, nth)),
+                reads: AtomicU64::new(0),
+            };
+            let hello = Connection::hello_until(Arc::new(link), Role::Cli, until);
+            let hello_ok = hello.is_ok();
+            let mut answered = None;
+            if let Ok(mut connection) = hello {
+                let left = until.saturating_duration_since(Instant::now());
+                if !left.is_zero() {
+                    connection.set_read_timeout(Some(left)).unwrap();
+                    answered = Some(connection.request(Op::List).is_ok());
+                }
+            }
+            let elapsed = started.elapsed();
+            let shut = shut.load(Ordering::Acquire);
+            println!(
+                "{stage}: budget {budget} ms, hello {hello_ok}, answer {answered:?}, ended after {elapsed:?}, link shut {shut}"
+            );
+            let within = |low: u64, high: u64| {
+                elapsed >= Duration::from_millis(low) && elapsed < Duration::from_millis(high)
+            };
+            match stage {
+                "late fragmented hello" => assert!(!hello_ok && within(280, 455), "{stage}"),
+                "late fragmented answer" => {
+                    assert!(
+                        hello_ok && answered == Some(false) && within(280, 455),
+                        "{stage}"
+                    )
+                }
+                "legitimate fragmented round trip" => {
+                    assert!(
+                        hello_ok && answered == Some(true) && within(350, budget),
+                        "{stage}"
+                    )
+                }
+                "buffered hello taken after the deadline" => {
+                    assert!(!hello_ok && answered.is_none() && shut, "{stage}")
+                }
+                _ => assert!(hello_ok && answered == Some(false) && shut, "{stage}"),
+            }
+            server.join().unwrap();
+        }
     }
 
     #[test]
