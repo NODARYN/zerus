@@ -254,7 +254,11 @@ The bar also opens **Feed**, **Inbox**, **Reports**, **Cards** and **Lead chat**
 The first four read one page at a time, at most 200 rows. **Next page** keeps
 the original page cursor, so later inserts do not move that snapshot;
 **First page** starts a fresh snapshot, and **Refresh** rereads the selected
-page. The feed follows the journal's oldest-first order. Reports are the
+page. The feed follows the journal's oldest-first order. Each event reads as
+a sentence: who acted (you, the team service or a member), what happened, and
+the task number and member it names; the journal's exact text stays in the
+event's tooltip. Inbox and card rows show their state and who wrote them the
+same way. Reports are the
 report items on the selected inbox page, not an exhaustive report search.
 Only one page is retained, and closing the drawer drops it.
 
@@ -270,7 +274,11 @@ and conversation must be available. Sends keep the normal guarded delivery
 and durable request identity; an uncertain delivery is never replayed.
 
 **Members** lists each member with its role, what it works on ("Working on
-#%1", "Reviewing #%1", "Testing #%1") and whether its session is linked. A
+#%1", "Reviewing #%1", "Testing #%1") and whether its session is linked. The
+member's name, **Session linked** in its details and **Open session** in its
+menu open the member's own session, found by the same computer and launch
+binding the lead's Team tab uses; when that session is not on the session list
+the menu says so and nothing opens. A
 member's actions are **Pause**, **Resume**, **Stop** and **Remove**; the lead
 cannot be removed. Removing a member puts its open work back to the lead.
 
