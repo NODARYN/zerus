@@ -56,6 +56,27 @@ it("translates the drawer rows' state and actor", () => {
   expect(cards.rows[0].by).toBe("local");
 });
 
+it("describes the editable Land setting in Russian", async () => {
+  const { TeamSettingsDialog } = await import("./TeamSettingsDialog");
+  const { teamView } = await import("./fixtures");
+  const { default: status } = await import("../../../core/src/teams/fixtures/cli-status.json");
+  const { completeSettings } = await import("./team-settings");
+  const settings = structuredClone(status.team.settings);
+  if (!completeSettings(settings)) throw new Error("Incomplete product fixture");
+  const host = mount(() => createComponent(TeamSettingsDialog, {
+    view: { ...teamView, settings },
+    busy: false,
+    onSave: async () => ({ outcome: "done", receipt: {}, request_id: "land-setting" }),
+    onClose: () => {},
+  }));
+  const field = host.querySelector<HTMLInputElement>("[data-setting=land_allowed]")!;
+  expect(field.disabled).toBe(false);
+  expect(field.closest("label")?.textContent).toBe("Разрешить этапы публикации");
+  expect(host.querySelector("[data-landing-note]")?.textContent).toBe(
+    "Действует для новых этапов публикации. Уже созданные этапы могут завершиться.",
+  );
+});
+
 it("calls the team's lead «лид» in every Teams string", () => {
   const lead = Object.entries(catalog).filter(([source]) => /\blead\b/i.test(source));
   expect(lead.length).toBeGreaterThan(20);
