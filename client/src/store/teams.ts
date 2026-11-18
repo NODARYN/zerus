@@ -250,7 +250,8 @@ export interface UnresolvedCall { call: TeamCall; detail: string; state: "uncert
  * the person has seen it or the view changes. A read failure never replaces
  * a view's reason: it is read with `teams.readFailureFor(key)` and goes when
  * that key reads again. `teams.failure()` is the newest reason of any kind. */
-export interface TeamFailure { key: string; code: string; message: string; source: string }
+/** `action` is the refused call's kind (G10): the banner names it. */
+export interface TeamFailure { key: string; code: string; message: string; source: string; action?: string }
 
 /** The New team dialog's one create intent: its team and request ids, kept in
  * the store so that closing the dialog keeps them. */
@@ -366,8 +367,8 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
 
   // ----------------------------------------------------------- failures
 
-  function failAction(source: string, code: string, message: string) {
-    const reason: TeamFailure = { key: "action", code, message, source };
+  function failAction(source: string, code: string, message: string, action?: string) {
+    const reason: TeamFailure = { key: "action", code, message, source, ...(action ? { action } : {}) };
     const next = new Map(actionFailures());
     next.delete(source);
     next.set(source, reason);
@@ -792,7 +793,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   }
   const refuseFull = (call: TeamCall, source: string): TeamOutcome => {
     const detail = "There are too many unresolved actions. Check or dismiss them first.";
-    failAction(source, "unresolved_full", detail);
+    failAction(source, "unresolved_full", detail, call.action.kind);
     // Nothing was sent: a create intent refused here has no other trace.
     if (!unresolvedOf(call.request_id) && createIntent()?.request_id === call.request_id) setCreateIntent(null);
     return { outcome: "failed", detail, code: "unresolved_full", request_id: call.request_id };
@@ -829,10 +830,14 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     switch (outcome?.outcome) {
       case "confirm": setConfirmation({ call: { ...call, confirmed: false }, confirmation: outcome.confirmation }); return outcome;
       case "pending": putUnresolved(call, "The action waits for the team.", "pending"); return outcome;
-      case "done": settled(call.request_id); return outcome;
+      case "done":
+        settled(call.request_id);
+        // The asking view's next action that went through retires its reason (G10).
+        if (source) clearFailure(source);
+        return outcome;
       case "failed":
         settled(call.request_id);
-        failAction(source, outcome.code ?? "", outcome.detail);
+        failAction(source, outcome.code ?? "", outcome.detail, call.action.kind);
         return outcome;
       case "uncertain": putUnresolved(call, outcome.detail, "uncertain"); return outcome;
       default: {

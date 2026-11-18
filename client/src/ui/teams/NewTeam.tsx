@@ -396,7 +396,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
       <Show when={changed()}>
         <div class="notice warn nt-error" role="status" data-template-changed><Icon name="triangle-alert" size={16} /><span>{tr("The template changed since you saw it, and nothing was created: review it as it is now, then create the team again.")}</span></div>
       </Show>
-      <Show when={shownError()}><div class="notice danger nt-error" role="alert" data-new-team-error><Icon name="triangle-alert" size={16} /><span>{shownError()}</span></div></Show>
+      {/* A refusal is said once, in the footer beside Create team (G10). */}
       <Show when={sendingCreate() && !intentCall()}>
         <div class="notice nt-note" role="status" data-create-sending><Icon name="loader-circle" size={16} /><span>{tr("The team is being created.")}</span></div>
       </Show>
