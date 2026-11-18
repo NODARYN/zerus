@@ -14,6 +14,7 @@ const f = vi.hoisted(() => ({
   setForm: (_view: unknown) => {}, form: (() => undefined) as () => unknown,
   setList: (_rows: unknown[]) => {},
 }));
+vi.mock("@tauri-apps/api/core", async (original) => ({ ...await original<typeof import("@tauri-apps/api/core")>(), invoke: vi.fn(async () => 1) }));
 vi.mock("../../bridge", async (original) => ({ ...await original<typeof import("../../bridge")>(), taskBoardAction: f.board }));
 vi.mock("../../store/ui", async (original) => {
   const module = await original<typeof import("../../store/ui")>();
@@ -212,4 +213,45 @@ it.each(["backlog", "todo", "active", "review", "done"])("handles a %s pointer d
     expect(f.board).not.toHaveBeenCalled();
     expect(notices().map((n) => n.text)).toContain("The task changed. Nothing was changed. Refresh the task.");
   }
+});
+
+const modes = ["board", "graph", "lanes", "layers"] as const;
+function selectMode(host: HTMLElement, mode: typeof modes[number]) {
+  if (mode !== "board") host.querySelector<HTMLButtonElement>(`[data-team-${mode}-mode]`)!.click();
+}
+function expectDropTarget(host: HTMLElement, board: boolean) {
+  const canvas = host.querySelector<HTMLElement>(".team-canvas")!;
+  expect.soft(canvas.dataset.teamTaskDrop).toBe(board ? teamView.bar.id : undefined);
+  expect.soft(canvas.classList.contains("team-task-drop")).toBe(board);
+  expect.soft(host.textContent?.includes("Drop a Backlog or To do task here to send it to this team.")).toBe(board);
+}
+
+it.each(modes)("limits HTML task drops to Board (view: %s)", async (mode) => {
+  const host = await setup();
+  // Change mode with a drag already active: the shared canvas must retire its
+  // target and handlers as soon as the person leaves Board.
+  const { task, data } = start("todo");
+  selectMode(host, mode); await tick();
+  expectDropTarget(host, mode === "board");
+  expect.soft(drop(host, data)).toBe(mode === "board"); await tick();
+  if (mode === "board") {
+    expect(f.board).toHaveBeenCalledExactlyOnceWith("example-project", task.uuid, "todo", { kind: "send_to_team", team: teamView.bar.id });
+  } else expect(f.board).not.toHaveBeenCalled();
+});
+
+it.each(modes)("limits pointer task drops to Board (view: %s)", async (mode) => {
+  publish("todo"); const host = await setup(true);
+  selectMode(host, mode); await tick();
+  host.querySelector<HTMLButtonElement>('[data-filter="todo"]')!.click();
+  const card = host.querySelector<HTMLElement>(".tk-card")!, canvas = host.querySelector<HTMLElement>(".team-canvas")!;
+  expect(card).not.toBeNull();
+  vi.spyOn(document, "elementFromPoint").mockReturnValue(canvas);
+  card.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 0, clientY: 0, pointerId: 1, button: 0, buttons: 1, isPrimary: true }));
+  window.dispatchEvent(new PointerEvent("pointermove", { clientX: 100, clientY: 100, pointerId: 1, buttons: 1 }));
+  expectDropTarget(host, mode === "board");
+  window.dispatchEvent(new PointerEvent("pointerup", { clientX: 100, clientY: 100, pointerId: 1 }));
+  await new Promise<void>((done) => setTimeout(done, 0)); await tick();
+  if (mode === "board") {
+    expect(f.board).toHaveBeenCalledExactlyOnceWith("example-project", fromWriter[0].uuid, "todo", { kind: "send_to_team", team: teamView.bar.id });
+  } else expect(f.board).not.toHaveBeenCalled();
 });

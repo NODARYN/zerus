@@ -382,8 +382,9 @@ later slices.
 
 - On the task board, a task in Backlog or To do has **Send to team: %1** in
   its menu, one entry per running or paused team of its project.
-- Drag a task card from the session's Tasks side panel onto the Team board to
-  send it to that team. This uses the same **Send to team** command and refusal
+- Drag a task card from the session's Tasks side panel onto the Team tab's
+  **Board** view to send it to that team. Graph, Lanes and Layers have no task
+  drop target. This uses the same **Send to team** command and refusal
   messages. Only writable Backlog and To do cards from the same project are
   accepted; the task's current stage is checked again on drop. HTML dragging
   and the macOS/Windows pointer path have the same checks. An in-flight send
