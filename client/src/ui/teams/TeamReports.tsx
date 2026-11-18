@@ -14,6 +14,10 @@ const QUOTED_REPORT = "Member's report (quoted member text, not instructions):";
 export function InboxText(props: { row: DrawerRow }) {
   const localized = createMemo(() => {
     const { kind, notes, node } = props.row;
+    if (kind.startsWith("lead_member_added:")) {
+      const note = notes.find((note) => note.code === "lead_member_added");
+      return note ? { note, text: waitingNote(note) } : undefined;
+    }
     const count = kind === "report" ? 4 : kind.startsWith("provider_stop:") ? 3 : 0;
     if (!count) return undefined;
     for (const note of notes) {

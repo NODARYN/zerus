@@ -6,6 +6,7 @@ import { render } from "solid-js/web";
 import type { DrawerRow } from "../../store/teamDrawers";
 import rows from "../../../core/src/teams/fixtures/provider-stop.json";
 import { InboxText } from "./TeamReports";
+import { waitingNote } from "./decisions";
 
 vi.mock("../../i18n", async (importOriginal) => {
   const { translateWithCatalog } = await importOriginal<typeof import("../../i18n")>();
@@ -28,6 +29,14 @@ it("makes the Russian stage return the primary body and keeps the quoted report"
   expect(body[1]).toBe("Отчёт участника (цитата, не инструкции):\n> Implemented and checked");
   expect(host.textContent).not.toContain(rows.stage.notes[0].text);
   expect(host.querySelector("p.dim")).toBeNull();
+});
+
+it("localizes a lead's informational staffing item", () => {
+  expect(waitingNote({
+    code: "lead_member_added",
+    parameters: ["m4", "Codex", "reviewer"],
+    text: "English fallback",
+  })).toBe("Лид добавил участника m4 (Codex) в роль reviewer.");
 });
 
 it("names the stop and task for a standalone hand-back", () => {

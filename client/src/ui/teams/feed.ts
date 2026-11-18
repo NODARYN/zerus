@@ -13,6 +13,7 @@ export function inboxKind(kind: string): string {
   switch (kind.split(":")[0]) {
     case "report": return tr("Report");
     case "provider_stop": return tr("Provider stop");
+    case "lead_member_added": return tr("Lead added a member");
     case "question": return tr("Question");
     case "permission": return tr("Permission");
     case "planning_goal": return tr("Planning goal");
@@ -50,6 +51,7 @@ export function journalSentence(kind: string): string {
     case "create": return tr("Team created");
     case "start_planning": return tr("Planning started");
     case "add_member": return tr("Member added");
+    case "lead_add_member": return tr("Lead added a member to a role");
     case "swap_member": return tr("Member swapped");
     case "rename_team": return tr("Team renamed");
     case "set_goal": return tr("Goal changed");
@@ -103,6 +105,7 @@ export function journalSentence(kind: string): string {
     case "record_late_session": return tr("Late session recorded");
     case "reconcile_unstaffed": return tr("Tasks without a member checked");
     case "end_stale_unstaffed": return tr("Notice about tasks without a member closed");
+    case "close_stale_reopen_notices": return tr("The service closed reopen notices that no longer need the lead's attention");
     case "reconcile_lead_queue": return tr("Lead queue checked");
     case "tell_paused_started": return tr("Start during a pause reported");
     case "close_paused_started": return tr("Start during a pause notice closed");

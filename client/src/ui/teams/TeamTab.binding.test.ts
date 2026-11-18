@@ -24,13 +24,14 @@ vi.mock("../../store/teams", async () => {
   const [team, setTeam] = createSignal<TeamView>(); const [failure, setFailure] = createSignal<TeamFailure | null>(null); const [unresolved, setUnresolved] = createSignal<UnresolvedCall[]>([]);
   Object.assign(f, { setBinding, setTeam, setFailure, setUnresolved });
   return { newRequestId: () => "request-1", teams: {
-    probe: f.probe, hidden: f.hidden, teamOfSession: (identity: unknown) => { f.lookup(identity); return binding(); },
+    available: () => true, probe: f.probe, hidden: f.hidden, teamOfSession: (identity: unknown) => { f.lookup(identity); return binding(); },
     team, failure, failureFor: (source: string) => failure()?.source === source ? failure() : null, readFailureFor: (key: string) => failure()?.key === key ? failure() : null, unresolved,
     closeTeam: async () => { f.close(); setTeam(undefined); }, openTeam: async (id: string) => { f.open(id); },
     run: f.run, check: f.check, dismiss: f.dismiss, clearFailure: f.clear, busy: () => false, page: vi.fn(), confirmation: () => null, cancelConfirmation: vi.fn(),
   } };
 });
 vi.mock("../sessions/SessionCard", () => ({ AgentTile: () => null }));
+vi.mock("../../store/teamTaskIntake", () => ({ canDropTeamTask: () => false, requestTeamTask: vi.fn(), teamTaskDragOver: vi.fn(), teamTaskDrop: vi.fn() }));
 import { TeamTab } from "./TeamTab";
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; f.choose(undefined); f.setBinding({ state: "unknown" }); f.setTeam(undefined); f.setFailure(null); f.setUnresolved([]); document.body.replaceChildren(); vi.clearAllMocks(); });
