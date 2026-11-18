@@ -17,6 +17,13 @@ pub(crate) struct ProviderStop {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProviderObservation {
+    pub stop: Option<ProviderStop>,
+    pub progress_ms: Option<i64>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unix {
     use super::*;
     use crate::state::{recovery, storage, string};

@@ -346,10 +346,7 @@ impl Ports for Native {
                     }
                     Err(e)
                         if e.code == crate::teams::ops::PROVIDER_STOP_CHANGED
-                            || e.code == zerus_team_plan::problem::code::STALE_REVISION =>
-                    {
-                        ()
-                    }
+                            || e.code == zerus_team_plan::problem::code::STALE_REVISION => {}
                     Err(e) => return Err(e),
                 }
                 Ok(())

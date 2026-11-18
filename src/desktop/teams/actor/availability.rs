@@ -116,7 +116,9 @@ fn read(
         CurrentRecord::Unbound => return Ok(Read::Missing),
         CurrentRecord::Unresolved(why) => return Ok(Read::Unresolved(why)),
     };
-    if let Some((record, stop)) = record.and_then(|record| Some((record, record.provider_stop?))) {
+    if let Some((record, stop)) =
+        record.and_then(|record| Some((record, record.provider.as_ref()?.stop?)))
+    {
         return Ok(Read::Stopped(Box::new(record.clone()), stop));
     }
     let db = connection(config)?;
@@ -144,7 +146,8 @@ fn read(
             && named.conversation == record.conversation_id
             && value["agent"] == record.agent
     }) {
-        if let Some(stop) = team_provider_stop::projected_stop(&value, record.main_progress_ms) {
+        let progress = record.provider.as_ref().and_then(|provider| provider.progress_ms);
+        if let Some(stop) = team_provider_stop::projected_stop(&value, progress) {
             return Ok(Read::Stopped(Box::new(record.clone()), stop));
         }
     }

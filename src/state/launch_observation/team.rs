@@ -153,8 +153,7 @@ fn record(value: Value, launch: &str) -> Checked<TeamObservation> {
         run_id: get("run_id", 256)?,
         conversation_id: get("conversation_id", 2048)?,
         cwd: get("cwd", 4096)?,
-        provider_stop: None,
-        main_progress_ms: None,
+        provider: None,
         account: if account.is_empty() {
             format!("native-{agent}")
         } else {
@@ -349,17 +348,18 @@ fn selected_session(
             Ok(job)
                 if !job
                     .as_ref()
-                    .is_some_and(|job| crate::state::recovery::same_active_failure(&v, job)) =>
-            {
-                ()
-            }
+                    .is_some_and(|job| crate::state::recovery::same_active_failure(&v, job)) => {}
             _ => stop = None,
         }
     }
     match record(v, launch)? {
         TeamObservation::Record(mut found) => {
-            found.provider_stop = stop;
-            found.main_progress_ms = progress;
+            found.provider = provider.then(|| {
+                Box::new(crate::state::team_provider_stop::ProviderObservation {
+                    stop,
+                    progress_ms: progress,
+                })
+            });
             Ok(TeamSession::Record(found))
         }
         _ => Err(Fault),

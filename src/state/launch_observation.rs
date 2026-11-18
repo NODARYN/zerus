@@ -43,8 +43,8 @@ pub(crate) struct TeamRecord {
     pub run_id: String,
     pub conversation_id: String,
     pub cwd: String,
-    pub provider_stop: Option<super::team_provider_stop::ProviderStop>,
-    pub main_progress_ms: Option<i64>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub provider: Option<Box<super::team_provider_stop::ProviderObservation>>,
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
