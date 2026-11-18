@@ -47,7 +47,10 @@ pub(super) fn isolated(fixture: &str) -> String {
     text
 }
 
-fn native(state: &std::path::Path, config: &std::path::Path) -> super::super::native::Native {
+pub(super) fn native(
+    state: &std::path::Path,
+    config: &std::path::Path,
+) -> super::super::native::Native {
     super::super::native::Native {
         config: crate::config::Config {
             home: String::new(),
@@ -250,6 +253,23 @@ impl super::super::ports::Ports for Production {
         m: &Member,
     ) -> super::super::ports::Result<super::super::ports::Availability> {
         super::super::ports::Ports::availability(&mut self.native, t, m)
+    }
+    fn held_availability(
+        &mut self,
+        store: &mut crate::teams::store::Store,
+        team: &zerus_team_plan::model::Team,
+        member: &Member,
+        effect: &crate::teams::store::EffectIntent,
+        now: i64,
+    ) -> super::super::ports::Result<(super::super::ports::Availability, Option<String>)> {
+        super::super::ports::Ports::held_availability(
+            &mut self.native,
+            store,
+            team,
+            member,
+            effect,
+            now,
+        )
     }
     fn deliver(
         &mut self,
