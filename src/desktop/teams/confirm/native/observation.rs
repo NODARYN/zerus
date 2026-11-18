@@ -445,6 +445,39 @@ mod tests {
         isolated("desktop::teams::confirm::native::observation::tests::archive_fixture");
     }
     #[test]
+    fn an_untracked_exit_with_incomplete_coverage_requests_catalog_repair() {
+        isolated("desktop::teams::confirm::native::observation::tests::repair_exit_catalog_child");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn repair_exit_catalog_child() {
+        let (config, _, _) = store_env();
+        let (b, _, record) = real_codex(|_| ());
+        let id = crate::state::archive_for_test(&record).unwrap();
+        std::fs::remove_file(config.state.join("archive-catalog-v1.sqlite3")).unwrap();
+        let roots = Roots::open(&config.state, "question_receipts").unwrap();
+        let name = record["name"].as_str().unwrap();
+        assert_eq!(
+            observed(
+                name,
+                archive(&config.state, &roots, &b, name).map(|_| unreachable!())
+            )
+            .unwrap_err(),
+            format!(
+                "Whether member session {name} ended is unknown ({}); nothing was resumed",
+                crate::state::archive_catalog::INCOMPLETE
+            )
+        );
+        let admitted = config.state.join("archive-catalog-v2/teams-attempt.json");
+        assert!(admitted.is_file(), "the confirmation requested bounded repair");
+        assert!(config
+            .state
+            .join("archives")
+            .join(format!("{id}.json"))
+            .is_file());
+    }
+    #[test]
     fn a_persons_pause_reads_as_paused_not_as_an_exit_to_resume() {
         isolated("desktop::teams::confirm::native::observation::tests::pause_fixture");
     }

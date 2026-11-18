@@ -98,6 +98,10 @@ std::thread_local! {
 }
 
 mod refresh;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use refresh::team_worker;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use refresh::team_worker_with_budget;
 pub(crate) const INCOMPLETE: &str = refresh::INCOMPLETE;
 pub(super) fn incomplete(error: &str) -> bool {
     error.starts_with(INCOMPLETE) || error.starts_with("archive metadata index:")
@@ -176,41 +180,11 @@ pub(super) fn removed(db: Catalog, path: &Path) {
     }
 }
 
-/// Exact run lookup with complete native coverage, never an advisory SQL miss.
-/// The selected body is still read through the caller's original native root.
-#[cfg(unix)]
-pub(crate) fn find_run(state: &Path, name: &str, run: &str) -> Result<Option<String>> {
-    if crate::platform::canonical(state).map_err(|e| e.to_string())?
-        != crate::platform::canonical(root()).map_err(|e| e.to_string())?
-    {
-        return Err("Archive lookup belongs to another state root".into());
-    }
-    let _guard = lock(None)?;
-    let db = catalog()?;
-    if refresh::proof(&db)? != db.directory {
-        return Err(INCOMPLETE.into());
-    }
-    let mut query = sql(db.prepare(
-        "SELECT substr(id,1,65) FROM archive_identities WHERE valid=1 AND name=? AND run=? ORDER BY id LIMIT 2",
-    ))?;
-    let ids = sql(query.query_map(params![name, run], |row| row.get::<_, String>(0)))?;
-    let ids = sql(ids.collect::<rusqlite::Result<Vec<_>>>())?;
-    if ids.len() > 1
-        || ids.iter().any(|id| {
-            !uuid::Uuid::parse_str(id).is_ok_and(|uuid| !uuid.is_nil() && uuid.to_string() == *id)
-        })
-    {
-        return Err("No exact unique exit archive".into());
-    }
-    if let Some(id) = ids.first() {
-        let record = archive::read_archive(name, id)?;
-        if record["run_id"] != run {
-            return Err("The exact archive identity changed".into());
-        }
-    }
-    current_proof(&db)?;
-    Ok(ids.into_iter().next())
-}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod teams;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use teams::{find_run, member_archive_pending};
+
 fn current_proof(db: &Catalog) -> Result<()> {
     if refresh::directory()? != db.directory {
         return Err(refresh::INCOMPLETE.into());

@@ -1169,6 +1169,11 @@ pub(crate) fn archive_for_test(record: &Value) -> Result<String> {
     let _guard = lock(None)?;
     archive::save(record)
 }
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn dispatch_test_archive_catalog_worker() -> Result<i32> {
+    archive_catalog::team_worker()
+}
 /// The real `hgs inspect NAME --archive ID` reply, as the Teams confirmation
 /// reads an exited member's archive (zerus-63rru.62): after every event,
 /// without processes.
@@ -1558,6 +1563,10 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         return search_index::run_worker();
     }
     if args.first().map(String::as_str) == Some("archive-catalog-worker") {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if args.len() == 2 && args[1] == "--teams-repair" {
+            return archive_catalog::team_worker();
+        }
         if args.len() != 1 {
             return Err("Unexpected archive catalog worker arguments".into());
         }

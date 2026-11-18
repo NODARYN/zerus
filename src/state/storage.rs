@@ -169,7 +169,7 @@ pub(super) fn existing_lock_until(path: &Path, deadline: std::time::Instant) -> 
     lock_open_until(parent.existing_private_lock(name)?, deadline)
 }
 
-fn lock_open_until(file: fs::File, deadline: std::time::Instant) -> Result<Option<Guard>> {
+pub(super) fn lock_open_until(file: fs::File, deadline: std::time::Instant) -> Result<Option<Guard>> {
     loop {
         match file.try_lock_exclusive() {
             Ok(()) => return Ok(Some(Guard::held(file))),
