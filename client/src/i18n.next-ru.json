@@ -1215,6 +1215,7 @@
   "Pings every %1 while idle, about %2 an hour.": "Пинг каждые %1 в простое, около %2 в час.",
   "Pipeline": "Конвейер",
   "Pipeline progress": "Прогресс пайплайна",
+  "Pipeline stage %1 is ready. The service cannot read any eligible member (%2). It will check again.": "Этап конвейера %1 готов к выдаче. Службе недоступны данные всех подходящих участников (%2). Служба повторит проверку.",
   "Pipeline: %1": "Конвейер: %1",
   "Pipelines": "Конвейеры",
   "Placeholders:": "Подстановки:",

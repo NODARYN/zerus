@@ -270,7 +270,11 @@ impl Runtime {
                 && !self.ledger.pending_member(&team.id, &m.id)?
                 && held.is_none()
             {
-                match self.terminal_state(ports, team, m, now)? {
+                let terminal = self.terminal_state(ports, team, m, now)?;
+                // A terminal refusal blocks delivery but does not replace a
+                // fresh readability observation.
+                let answer = self.member_free(store, ports, team, (m, held), now, &mut readings)?;
+                match terminal {
                     // Its terminal holds input (zerus-63rru.79): not free, and
                     // needed like a member that cannot be read.
                     TerminalState::Standing { dialog } => {
@@ -279,11 +283,9 @@ impl Runtime {
                     // Tried again: a card for it stays as it is this pass.
                     TerminalState::Lapsed => {
                         needs.unread.insert(m.id.clone());
-                        self.member_free(store, ports, team, (m, held), now, &mut readings)?
+                        answer
                     }
-                    TerminalState::None => {
-                        self.member_free(store, ports, team, (m, held), now, &mut readings)?
-                    }
+                    TerminalState::None => answer,
                 }
             } else {
                 // A member out of the active set that holds started work is

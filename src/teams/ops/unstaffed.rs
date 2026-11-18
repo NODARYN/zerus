@@ -42,10 +42,11 @@ impl UnstaffedChanges {
         self.end.is_empty() && self.tell.is_empty() && self.stages.is_empty()
     }
 }
-fn text(node: &Unstaffed) -> String {
+fn text(node: &Unstaffed, stage: bool) -> String {
     if node.unreadable {
+        let subject = if stage { "Pipeline stage" } else { "Task" };
         return format!(
-            "Task {} is ready. {} It will check again.",
+            "{subject} {} is ready. {} It will check again.",
             node.node, node.reason
         );
     }
@@ -68,7 +69,7 @@ pub fn unstaffed_changes(
     let wanted: BTreeMap<u32, String> = now
         .iter()
         .filter(|u| u.unreadable || !stages.contains(&u.node))
-        .map(|u| (u.node, text(u)))
+        .map(|u| (u.node, text(u, stages.contains(&u.node))))
         .collect();
     let mut newest: BTreeMap<u32, &Told> = BTreeMap::new();
     for t in told {
@@ -250,7 +251,8 @@ pub(super) fn end_stale(ctx: &mut Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The stage nodes of a readiness view, which are retired, never told.
+/// Stage nodes are retired for permanent staffing gaps and get a notice for
+/// unreadability.
 pub fn unstaffed_stages(readiness: &Readiness) -> BTreeSet<u32> {
     readiness
         .nodes
