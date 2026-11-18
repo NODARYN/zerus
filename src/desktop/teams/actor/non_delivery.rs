@@ -20,6 +20,20 @@ impl Runtime {
         if let Some(last) = page.rows.last() {
             store.non_delivery_advanced(&team.id, last.seq)?;
         }
+        if store.has_stale_reopen_notices(&team.id)? {
+            match write(store, &team.id, Operation::CloseStaleReopenNotices, now) {
+                Ok(_) => (),
+                Err(error)
+                    if matches!(
+                        error.code.as_str(),
+                        code::STALE_REVISION | code::INVALID_STATE
+                    ) =>
+                {
+                    ()
+                }
+                Err(error) => return Err(error),
+            }
+        }
         Ok(())
     }
     fn non_delivery(
