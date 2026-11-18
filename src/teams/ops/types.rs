@@ -647,6 +647,8 @@ pub enum Operation {
     /// episodes. A call that finds none is refused with
     /// `unstaffed_unchanged`.
     EndStaleUnstaffed,
+    /// Close one page of refused-reopen notices that no longer call for lead action.
+    CloseStaleReopenNotices,
     /// A hand-out reserved for a member that left the active set (paused,
     /// stopped, unbound) is settled at the next pass (zerus-63rru.85): the
     /// effect superseded, the node handed back to the lead with one item,

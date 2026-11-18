@@ -66,6 +66,7 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::ReconcileUnstaffed
         | Operation::ReleaseProviderStop { .. }
         | Operation::EndStaleUnstaffed
+        | Operation::CloseStaleReopenNotices
         | Operation::SettleLeftHandout { .. }
         | Operation::UnbindMember { .. }
         | Operation::TellPausedStarted { .. }
