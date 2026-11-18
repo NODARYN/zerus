@@ -11,6 +11,10 @@ fn check_root(state: &Path) -> Result<()> {
     Ok(())
 }
 
+fn canonical_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok_and(|uuid| !uuid.is_nil() && uuid.to_string() == id)
+}
+
 /// A standing confirmation can use only the existing complete, unique run
 /// lookup. Keep the result unknown on this pass even when repair was admitted.
 pub(crate) fn find_run(state: &Path, name: &str, run: &str) -> Result<Option<String>> {
@@ -34,7 +38,7 @@ fn find_run_locked(name: &str, run: &str) -> Result<Option<String>> {
     ))?;
     let ids = sql(query.query_map(params![name, run], |row| row.get::<_, String>(0)))?;
     let ids = sql(ids.collect::<rusqlite::Result<Vec<_>>>())?;
-    if ids.len() > 1 || ids.iter().any(|id| !session_id::canonical(id)) {
+    if ids.len() > 1 || ids.iter().any(|id| !canonical_id(id)) {
         return Err("No exact unique exit archive".into());
     }
     if let Some(id) = ids.first() {
@@ -52,7 +56,7 @@ fn find_run_locked(name: &str, run: &str) -> Result<Option<String>> {
 /// budget and requests the worker even if no matching body fits that budget.
 pub(crate) fn member_archive_pending(state: &Path, session: &str, launch: &str) -> Result<bool> {
     check_root(state)?;
-    if !session_id::canonical(session) || !session_id::canonical(launch) {
+    if !canonical_id(session) || !canonical_id(launch) {
         return Err(INCOMPLETE.into());
     }
     if refresh::catalog_without_request().is_ok() {
@@ -81,9 +85,11 @@ fn native_archive_pending(session: &str, launch: &str) -> Result<bool> {
             return Err(INCOMPLETE.into());
         }
         let path = entry.map_err(|e| e.to_string())?.path();
-        let Some(id) = path.file_stem().and_then(|id| id.to_str()).filter(|id| {
-            path.extension().is_some_and(|ext| ext == "json") && session_id::canonical(id)
-        }) else {
+        let Some(id) = path
+            .file_stem()
+            .and_then(|id| id.to_str())
+            .filter(|id| path.extension().is_some_and(|ext| ext == "json") && canonical_id(id))
+        else {
             continue;
         };
         let Ok(stamp) = archive_references::current_stamp(&path) else {
