@@ -90,7 +90,7 @@ impl Runtime {
         store: &mut Store,
         ports: &mut impl Ports,
         team: &Team,
-        m: &Member,
+        (m, held): (&Member, Option<&EffectIntent>),
         now: i64,
         readings: &mut Vec<ops::MemberReading>,
     ) -> Result<Option<Availability>> {
@@ -98,8 +98,15 @@ impl Runtime {
         if !self.due(store, team, &key, "", now)? {
             return Ok(None);
         }
-        match ports.availability(team, m) {
-            Ok(answer) => {
+        let answer = match held.filter(|effect| effect.state == "submitted") {
+            Some(effect) => ports.held_availability(store, team, m, effect, now),
+            None => ports.availability(team, m).map(|answer| (answer, None)),
+        };
+        match answer {
+            Ok((answer, stopped)) => {
+                if let Some(binding) = stopped {
+                    self.provider_stop_confirmed(store, team, m, binding, now)?;
+                }
                 self.recovered(store, team, &key, now)?;
                 if let Some(session) = &m.session {
                     readings.push(ops::MemberReading {
@@ -189,10 +196,9 @@ impl Runtime {
         // pass delivers nothing. Once its time passed, the first ready task
         // is the probe; the check below stops the pass unless the probe
         // ended the fact.
-        let lapsed = self.project_limit_state(store, team, now)? == ProjectState::Lapsed;
-        if self.project_limit_state(store, team, now)? == ProjectState::Standing {
-            return Ok(());
-        }
+        let limit = self.project_limit_state(store, team, now)?;
+        let lapsed = limit == ProjectState::Lapsed;
+        let standing = limit == ProjectState::Standing;
         // One readiness read: uncooled for the unstaffed comparison, then
         // cooled for the hand-outs. The bounded effects read also finds
         // holders whose task has started; members are read once when either
@@ -221,7 +227,7 @@ impl Runtime {
             integration: team.settings.integration,
         };
         let ready = ready::ready(&initial);
-        let ready_work = !ready.is_empty();
+        let ready_work = !standing && !ready.is_empty();
         // A task already handed out stays ready in the kernel's view until
         // its observation moves, and the store refuses a second intent for
         // it (zerus-63rru.71). Held here like a cooling task, it takes no
@@ -256,7 +262,7 @@ impl Runtime {
                 // An occupied seat remains unavailable for new work. Only
                 // an undecidable binding or first-message readiness needs
                 // this card: decisive ends use delivery recovery (.85).
-                self.member_free(store, ports, team, m, now, &mut readings)?
+                self.member_free(store, ports, team, (m, held), now, &mut readings)?
             } else if ready_work
                 && m.id != team.lead
                 && m.state == MemberState::Active
@@ -273,10 +279,10 @@ impl Runtime {
                     // Tried again: a card for it stays as it is this pass.
                     TerminalState::Lapsed => {
                         needs.unread.insert(m.id.clone());
-                        self.member_free(store, ports, team, m, now, &mut readings)?
+                        self.member_free(store, ports, team, (m, held), now, &mut readings)?
                     }
                     TerminalState::None => {
-                        self.member_free(store, ports, team, m, now, &mut readings)?
+                        self.member_free(store, ports, team, (m, held), now, &mut readings)?
                     }
                 }
             } else {
@@ -316,6 +322,11 @@ impl Runtime {
                 state: m.state,
                 free: held.is_none() && answer == Some(Availability::Free),
             });
+        }
+        // Capacity blocks new delivery, but a stopped holder can still
+        // return its existing work and close the matching unreadable card.
+        if standing {
+            return Ok(());
         }
         let observed_at = ports.clock_ms(now);
         self.record_readability(store, team, readings, observed_at)?;

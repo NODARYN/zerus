@@ -77,6 +77,8 @@ pub struct ReportNote {
     pub code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<String>,
 }
 
 impl ReportNote {
@@ -84,6 +86,7 @@ impl ReportNote {
         Self {
             code: code.to_owned(),
             text: None,
+            parameters: Vec::new(),
         }
     }
     /// The English sentence a prompt or the command line shows under its own
@@ -627,6 +630,12 @@ pub enum Operation {
     /// creation. A call that finds nothing to change is refused with
     /// `unstaffed_unchanged`.
     ReconcileUnstaffed,
+    #[serde(skip_deserializing)]
+    ReleaseProviderStop {
+        node: u32,
+        member: String,
+        effect_request_id: String,
+    },
     /// Record fresh availability readings for exact active member bindings.
     RecordMemberReadability {
         readings: Vec<MemberReading>,
