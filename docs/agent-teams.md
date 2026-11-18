@@ -303,13 +303,18 @@ decision says "Decision needed".
 
 A card's decisions are **Admit** for a task that waits for admission,
 **Accept** and **Return** for reported work, **Hold** or **Release**, and
-**Cancel task**. Return and Cancel task ask for a reason. Reassign and Route
-are commands (`hgs team reassign`, `hgs team route`); Route cannot move a
-stage, whose member is chosen by the hand-out. **Add task** opens the New task
-form in the Tasks side panel with this team preselected. If a previous draft
-is still saving, the team choice waits for the reopened form's active editor.
-A reserved card keeps its original destination. Stopped and archived teams
-offer no Add task.
+**Cancel task**. Return and Cancel task ask for a reason. **Reassign** asks
+for another active member of the same role and a reason. **Route** selects a
+role and one of its pipelines for a waiting or pending queue task. Routing
+keeps the dependencies and write paths. Changing the role clears the
+assignment. Both actions use the window's native confirmation. A stage's
+role follows its pipeline. Routing an approved task requires a logged plan
+edit.
+
+**Add task** opens the New task form in the Tasks side panel with this team
+preselected. If a previous draft is still saving, the team choice waits for
+the reopened form's active editor. A reserved card keeps its original
+destination. Stopped and archived teams offer no Add task.
 
 On a stopped or archived team's board, a task also shows what the current
 stop recorded: cancellation, release, key clearing, a refusal and its reason,
