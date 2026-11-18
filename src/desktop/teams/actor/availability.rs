@@ -131,6 +131,8 @@ pub(super) enum Unresolved {
     NoHandle,
     /// No live or saved session carries the handle: archived or removed.
     Gone,
+    /// The archive exists on disk and its metadata has not been indexed.
+    Archive,
     /// The handle's session names another launch, agent or folder.
     Changed,
     /// The person started the session fresh: a new conversation is another
@@ -145,6 +147,7 @@ impl Unresolved {
         match self {
             Unresolved::NoHandle => Fact::NoHandle,
             Unresolved::Gone => Fact::Gone,
+            Unresolved::Archive => Fact::Archive,
             Unresolved::Changed => Fact::Changed,
             Unresolved::StartedFresh => Fact::StartedFresh,
             Unresolved::Unavailable => Fact::Unavailable,
@@ -193,13 +196,14 @@ pub(super) fn current(
             launch,
             &handle.session_id,
             &handle.label_hint,
+            backfill,
         ));
     }
     drop(store);
     let Some((id, hint)) = source(config, team, member, launch)? else {
         return Ok(Current::Unresolved(Unresolved::NoHandle));
     };
-    let current = resolve(config, member, launch, &id, &hint);
+    let current = resolve(config, member, launch, &id, &hint, backfill);
     if backfill && matches!(current, Current::Run(_)) {
         // A failed write costs only the next read another try.
         let _ = record_handle(config, team, member, &id, &hint);
@@ -221,7 +225,14 @@ fn checked(run: String) -> Current {
     }
 }
 /// The session whose durable ID is `id`, as `member`'s current run.
-fn resolve(config: &Config, member: &Member, launch: &str, id: &str, hint: &str) -> Current {
+fn resolve(
+    config: &Config,
+    member: &Member,
+    launch: &str,
+    id: &str,
+    hint: &str,
+    repair: bool,
+) -> Current {
     use crate::state::TeamSession;
     match crate::state::observe_team_session(
         &config.state,
@@ -238,6 +249,15 @@ fn resolve(config: &Config, member: &Member, launch: &str, id: &str, hint: &str)
             Current::Unresolved(Unresolved::Changed)
         }
         TeamSession::StartedFresh => Current::Unresolved(Unresolved::StartedFresh),
+        TeamSession::Gone if repair => {
+            let archive =
+                crate::state::archive_catalog::member_archive_pending(&config.state, id, launch);
+            Current::Unresolved(match archive {
+                Ok(true) => Unresolved::Archive,
+                Ok(false) => Unresolved::Gone,
+                Err(_) => Unresolved::Unavailable,
+            })
+        }
         TeamSession::Gone => Current::Unresolved(Unresolved::Gone),
         TeamSession::Unavailable => Current::Unresolved(Unresolved::Unavailable),
     }

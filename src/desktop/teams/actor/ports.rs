@@ -218,6 +218,8 @@ pub(in crate::desktop::teams) enum Fact {
     NoHandle,
     /// No live or saved session carries its handle.
     Gone,
+    /// Its durable archive has no matching catalog identity.
+    Archive,
     /// Its session names another launch, agent or folder.
     Changed,
     /// The person started its session fresh.

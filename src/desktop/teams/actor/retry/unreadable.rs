@@ -10,6 +10,7 @@ use crate::desktop::teams::actor::ports::Fact;
 use crate::desktop::teams::actor::schedule::Needs;
 
 const ROWS: &str = "gate:unreadable:";
+const ARCHIVE: &str = "its archive is missing from the archive catalog";
 
 impl Runtime {
     /// A reservation can discover the first-send gate after selection. Keep
@@ -61,7 +62,10 @@ impl Runtime {
                 fact.clone(),
                 needs.holders.contains(member),
             );
-            self.for_row(|a| a.hold_write(store, team, (&key, 0, 0), &reason, now))?;
+            // Catalog recovery ends that hold immediately, even when the
+            // archived member still cannot take work until it is restored.
+            let generation = u32::from(*fact == Fact::Archive);
+            self.for_row(|a| a.hold_write(store, team, (&key, 0, generation), &reason, now))?;
         }
         Ok(())
     }
@@ -81,6 +85,7 @@ pub(in crate::desktop::teams::actor) fn sentence(
             Fact::FirstMessage => return format!("Member {member} ({role}) holds an open hand-out of task {node} but is waiting for its first-message readiness. Finish startup in the member's terminal. The service checks readiness again. This card closes when the member can take its hand-out or no longer holds it."),
             Fact::NoHandle => "no durable handle or launch evidence identifies its session",
             Fact::Unavailable => "its session record cannot be read",
+            Fact::Archive => ARCHIVE,
             _ => "its binding cannot be resolved",
         };
         return format!("Member {member} ({role}) holds an open hand-out of task {node} but its binding cannot be read: {what}. The service checks this binding again. This card closes when the member can be read or it no longer holds an open hand-out.");
@@ -126,6 +131,10 @@ pub(in crate::desktop::teams::actor) fn sentence(
         Fact::Gone => (
             "its session no longer exists here",
             "If it was archived, restore it and the member is read again; otherwise archive the member.",
+        ),
+        Fact::Archive => (
+            ARCHIVE,
+            "The service requests catalog repair at most once every five minutes on this computer.",
         ),
         Fact::Changed => (
             "its session now belongs to another launch, agent or folder",
