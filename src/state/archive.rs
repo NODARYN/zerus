@@ -25,7 +25,8 @@ pub(super) fn validate_record(name: &str, id: &str, record: &Value) -> Result<()
         || record["version"] != 1
         || string(record, "name") != name
         || string(record, "archive_id") != id
-        || !AGENTS.contains(&string(record, "agent"))
+        || !(AGENTS.contains(&string(record, "agent"))
+            || (record["agent"] == "dsh" && record["backend"] == "dsh"))
     {
         return Err(format!("{name}: invalid archive record {id}"));
     }
@@ -172,6 +173,25 @@ pub(super) fn save(record: &Value) -> Result<String> {
             "Restored Clear archive cleanup is unfinished; retain the binding for review".into(),
         );
     }
+    let id = publish(record)?;
+    // The archived session's own record goes, never its label's holder: a
+    // session in the ID layout removes `sessions/<id>.json` (P3a).
+    if let Some(current) = storage::current_of(record)? {
+        if current["run_id"] == record["run_id"]
+            && current["conversation_id"] == record["conversation_id"]
+        {
+            storage::remove_record(&current)?;
+        }
+    }
+    // Its own Git worktree lock goes with it, or stays and is reported; the
+    // archive stands either way (P3c).
+    worktree_lock::left(record);
+    Ok(id)
+}
+
+/// Publish an archive for a caller that has verified and locked its binding.
+/// Terminal and native providers retire the binding through their own writers.
+pub(super) fn publish(record: &Value) -> Result<String> {
     let db = archive_catalog::writer_catalog()?;
     let existing = verified_existing(&db, record)?;
     let id = if let Some(existing) = existing {
@@ -196,18 +216,6 @@ pub(super) fn save(record: &Value) -> Result<String> {
         archive_catalog::published(db, &path);
         id
     };
-    // The archived session's own record goes, never its label's holder: a
-    // session in the ID layout removes `sessions/<id>.json` (P3a).
-    if let Some(current) = storage::current_of(record)? {
-        if current["run_id"] == record["run_id"]
-            && current["conversation_id"] == record["conversation_id"]
-        {
-            storage::remove_record(&current)?;
-        }
-    }
-    // Its own Git worktree lock goes with it, or stays and is reported; the
-    // archive stands either way (P3c).
-    worktree_lock::left(record);
     Ok(id)
 }
 pub(super) fn equivalent(record: &Value, archived: &[Value]) -> bool {
@@ -458,6 +466,9 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
     if clear_context::cleanup_pending(&record) {
         return Err("Restored Clear archive cleanup is unfinished; retain the archive for review".into());
     }
+    if record["backend"] == "dsh" && dsh::retirement::restore_source_held(&record)? {
+        return Err(dsh::retirement::RESTORE_PENDING.into());
+    }
     // Do not remove the only recoverable source of a not-yet-confirmed restore.
     if record_path(name).exists() && {
         let active = read(name)?;
@@ -523,6 +534,13 @@ pub(super) fn reserve_clear_source(record: &Value) -> Result<()> {
 /// Commit the restore after its exact ID, or its explicitly cleared successor.
 /// The active binding has already been synced by the caller before this runs.
 pub(super) fn confirm_restore(record: &mut Value) -> Result<()> {
+    confirm_restore_with(record, write)
+}
+
+pub(super) fn confirm_restore_with(
+    record: &mut Value,
+    persist: impl FnOnce(&mut Value) -> Result<()>,
+) -> Result<()> {
     if terminating::pending(record) {
         return Ok(());
     }
@@ -561,7 +579,7 @@ pub(super) fn confirm_restore(record: &mut Value) -> Result<()> {
         settled.as_object_mut().unwrap().remove("restore_archive_cleanup");
         settled.as_object_mut().unwrap().remove("clear_context_request");
     }
-    write(&mut settled)?;
+    persist(&mut settled)?;
     *record = settled;
     Ok(())
 }

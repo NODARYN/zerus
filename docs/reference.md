@@ -1419,6 +1419,11 @@ and removes an archive binding only after the native agent confirms the expected
 conversation. Failed restore keeps it. **Forget archive** preserves native history;
 `resume --all` excludes archives.
 
+For native DeepSeek sessions, `terminate` stops the selected session on its
+resident host and archives it. `archive` requires a stopped or paused session.
+Restore resumes the archived conversation on the resident host. Other sessions
+on that host stay available throughout.
+
 Desktop Restore keeps the opened conversation and its message draft when the
 resumed row confirms the archived conversation ID. Text, attachments and editor
 selection move to the live draft key; machine/project/search scopes stay in

@@ -875,8 +875,7 @@ pub fn fork_session(
 pub(crate) fn reference_details(name: &str, archive: &str, agent: &str) -> Result<Value> {
     local_sessions()?;
     if opencode::exists(name) { if !archive.is_empty() {return Err("OpenCode archives are unavailable".into());} return opencode::inspect(name, if agent.is_empty() {None} else {Some(agent)}); }
-    if dsh::exists(name) {
-        if !archive.is_empty() { return Err("DeepSeek archives are unavailable".into()); }
+    if archive.is_empty() && dsh::exists(name) {
         return dsh::inspect(name, if agent.is_empty() { None } else { Some(agent) });
     }
     let archive = if archive.is_empty() { None } else { Some(archive) };
@@ -1746,7 +1745,9 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     if args.first().is_some_and(|name| opencode::exists(name)) {
         return opencode::dispatch(command, args);
     }
-    if args.first().is_some_and(|name| dsh::exists(name)) {
+    let explicit_archive = matches!(command.as_str(), "inspect" | "resume" | "rename" | "forget")
+        && args.iter().any(|arg| arg == "--archive");
+    if !explicit_archive && args.first().is_some_and(|name| dsh::exists(name)) {
         return dsh::dispatch(command, args);
     }
     if command == "settings" {
