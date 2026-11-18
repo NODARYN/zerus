@@ -1,6 +1,7 @@
 import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import { tr } from "../../i18n";
-import { selected, setPage } from "../../store/ui";
+import { selected } from "../../store/ui";
+import { canDropTeamTask, requestTeamTask, teamTaskDragOver, teamTaskDrop } from "../../store/teamTaskIntake";
 import { machineCards } from "../../store/machines";
 import { newRequestId, teams, type TeamCall, type TeamOutcome, type UnresolvedCall } from "../../store/teams";
 import { rowIdentity, rowIsSession } from "./session-binding";
@@ -222,8 +223,9 @@ export function TeamWorkspace(props: {
       </Show>
       <div class="team-body">
         <section class="team-main">
-          <header class="team-board-head"><Icon name="columns-3" size={14} /><button type="button" class="btn small" aria-pressed={planMode() === "board"} onClick={() => setPlanMode("board")}>{tr("Board")}</button><button type="button" class="btn small" data-team-graph-mode aria-pressed={planMode() === "graph"} onClick={() => setPlanMode("graph")}>{tr("Graph")}</button><button type="button" class="btn small" data-team-lanes-mode aria-pressed={planMode() === "lanes"} onClick={() => setPlanMode("lanes")}>{tr("Lanes")}</button><button type="button" class="btn small" data-team-layers-mode aria-pressed={planMode() === "layers"} onClick={() => { setSelectedNode(null); setPlanMode("layers"); }}>{tr("Layers")}</button><span class="grow" /><button type="button" class="btn small team-members-toggle" data-team-members-toggle onClick={showMembers}><Icon name="users" size={12} />{tr("Members")}</button><button type="button" class="btn small" onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
-          <div class="team-canvas" classList={{ "team-canvas-board": planMode() === "board" }}>
+          <header class="team-board-head"><Icon name="columns-3" size={14} /><button type="button" class="btn small" aria-pressed={planMode() === "board"} onClick={() => setPlanMode("board")}>{tr("Board")}</button><button type="button" class="btn small" data-team-graph-mode aria-pressed={planMode() === "graph"} onClick={() => setPlanMode("graph")}>{tr("Graph")}</button><button type="button" class="btn small" data-team-lanes-mode aria-pressed={planMode() === "lanes"} onClick={() => setPlanMode("lanes")}>{tr("Lanes")}</button><button type="button" class="btn small" data-team-layers-mode aria-pressed={planMode() === "layers"} onClick={() => { setSelectedNode(null); setPlanMode("layers"); }}>{tr("Layers")}</button><span class="grow" /><button type="button" class="btn small team-members-toggle" data-team-members-toggle onClick={showMembers}><Icon name="users" size={12} />{tr("Members")}</button><button type="button" class="btn small" disabled={!["running", "paused"].includes(props.view.bar.status)} onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
+          <div class="team-canvas" data-team-task-drop={props.view.bar.id} classList={{ "team-canvas-board": planMode() === "board", "team-task-drop": canDropTeamTask(props.view.bar) }}
+            onDragOver={(event) => teamTaskDragOver(event, props.view.bar)} onDrop={(event) => teamTaskDrop(event, props.view.bar)}>
             <Show when={planMode() === "layers"} fallback={
               <Show when={planMode() === "lanes"} fallback={
                 <Show when={planMode() === "graph"} fallback={
@@ -255,6 +257,7 @@ export function TeamWorkspace(props: {
             }><PhasePane view={props.view} busy={props.busy} /></Show>
           </div>
           <div class="team-toolbar">
+            <Show when={["running", "paused"].includes(props.view.bar.status)}><span class="team-note">{tr("Drop a Backlog or To do task here to send it to this team.")}</span></Show>
             <Show when={props.view.truncated}><span class="team-note">{tr("Some cards are not shown.")}</span></Show>
             <span class="grow" />
             <Show when={props.view.after}><button type="button" class="btn small" data-team-first-page onClick={() => props.onPage(null)}>{tr("First page")}</button></Show>
@@ -415,7 +418,7 @@ export function TeamTab() {
       providerHome={teams.listed().find((row) => row.id === current().bar.id && row.project === current().bar.project)?.home}
       onSettingsSave={(call) => teams.run(call, source())}
       settingsBlocked={teams.unresolved().some((entry) => entry.call.team === current().bar.id && ["settings", "validation_config"].includes(entry.call.action.kind))}
-      onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => setPage("projects")} />}</Show>
+      onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => { const fresh = view(); if (fresh) requestTeamTask(fresh.bar); }} />}</Show>
     <Show when={!view() && actionReason(source())}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
     <TeamUnresolvedList entries={teams.unresolved()} busy={teams.busy()} onCheck={(entry) => void teams.check(entry, source())} onDismiss={(entry) => void teams.dismiss(entry, source())} />
     <TeamConfirmDialog source={source()} />
