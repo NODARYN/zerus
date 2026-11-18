@@ -62,7 +62,9 @@ it("a selected card shows its facts and decisions, sending by node", () => {
   (host.querySelector('[data-group="submitted"] .team-task-card') as HTMLButtonElement).click();
   const detail = host.querySelector("[data-team-detail]")?.textContent ?? "";
   expect(detail).toContain("example-project");
-  expect(detail).toContain("00000000-0000-4000-8000-000000000002");
+  // zerus-uiy9p G15: the UUID is in the task row's tooltip, not its text.
+  expect(detail).not.toContain("00000000-0000-4000-8000-000000000002");
+  expect(host.querySelector("[data-team-detail] [data-task-ref]")?.getAttribute("title")).toContain("00000000-0000-4000-8000-000000000002");
   expect(detail).toContain("m1");
   (host.querySelector('[data-task-action="accept"]') as HTMLButtonElement).click();
   expect(actions.at(-1)).toEqual(["accept", { node: 2 }]);

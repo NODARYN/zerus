@@ -3,6 +3,7 @@ import { tr } from "../../i18n";
 import { selected } from "../../store/ui";
 import { canDropTeamTask, requestTeamTask, teamTaskDragOver, teamTaskDrop } from "../../store/teamTaskIntake";
 import { machineCards } from "../../store/machines";
+import { openTask } from "../../store/taskNavigation";
 import { newRequestId, teams, type TeamCall, type TeamFailure, type TeamOutcome, type UnresolvedCall } from "../../store/teams";
 import { rowIdentity, rowIsSession } from "./session-binding";
 import { navigationTeamFor } from "./lead-navigation";
@@ -288,7 +289,11 @@ export function TeamWorkspace(props: {
                     <dl class="team-facts">
                       <dt>{tr("Task")}</dt><dd>
                         <Show when={shown().task} fallback={tr("not sent yet")}>
-                          {(task) => <><span class="team-block">{task().project}</span><span class="team-block mono">{task().uuid}</span></>}
+                          {/* The task by its project with Open task; its UUID only in the tooltip (G15). */}
+                          {(task) => <span class="team-task-ref" data-task-ref title={tr("Task %1 in %2", task().uuid, task().project)}>
+                            <span class="team-block">{task().project}</span>
+                            <button type="button" class="btn small" data-open-task onClick={() => openTask(task().project, task().uuid)}>{tr("Open task")}</button>
+                          </span>}
                         </Show>
                       </dd>
                       <dt>{tr("Role")}</dt><dd>{tr(shown().role || "unknown")}</dd>
@@ -298,7 +303,7 @@ export function TeamWorkspace(props: {
                         <dt>{tr("Checks the work of")}</dt><dd>{shown().implementer || tr("nobody yet")}</dd>
                       </Show>
                       <dt>{tr("Round")}</dt><dd>{shown().round}</dd>
-                      <Show when={shown().assigned_base}>{(base) => <><dt>{tr("Assigned base")}</dt><dd class="mono">{base()}</dd></>}</Show>
+                      <Show when={shown().assigned_base}>{(base) => <><dt>{tr("Assigned base")}</dt><dd class="mono" data-assigned-base title={base()}>{base().slice(0, 12)}</dd></>}</Show>
                       <Show when={shown().decided_by}><dt>{tr("Decided by")}</dt><dd>{tr(shown().decided_by)}</dd></Show>
                     </dl>
                     <Show when={shown().stages.length}>
