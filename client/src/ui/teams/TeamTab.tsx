@@ -23,6 +23,7 @@ import { boardColumns, stageAgrees, type BoardColumn } from "./pipeline-view";
 import { followTeamScope, type TeamScope } from "./team-tab-scope";
 import { TaskDependencies } from "./TaskDependencies";
 import { TaskPlacement } from "./TaskPlacement";
+import { TaskEvidence } from "./TaskEvidence";
 import { PlanView } from "./PlanView";
 import { LanesView } from "./LanesView";
 import { TeamTaskCard } from "./TeamTaskCard";
@@ -313,6 +314,7 @@ export function TeamWorkspace(props: {
                       </dl>
                     </Show>
                     <TaskDependencies task={shown()} status={props.view.bar.status} busy={props.busy} onSetDeps={(deps) => send("set_deps", { node: shown().node, deps })} />
+                    <TaskEvidence team={props.view.bar.id} card={shown()} revision={props.view.revision} />
                     <TaskActions card={shown()} teamStatus={props.view.bar.status} busy={props.busy} onAction={(kind) => send(kind, { node: shown().node })}
                       onReason={(button) => { setAsking(button); setReason(""); }} />
                     <Show when={asking()}>

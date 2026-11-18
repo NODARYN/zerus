@@ -469,3 +469,74 @@ fn by_state(
 fn scalar(db: &rusqlite::Connection, sql: &str, team: &str) -> Result<u32, Problem> {
     db.query_row(sql, [team], |row| row.get(0)).map_err(storage)
 }
+
+/// `evidence --team ID --node N` (zerus-5gcbh): the evidence beside one task's
+/// decision for the person and the lead. The task's latest report (by the
+/// task's implementer, with its commit and the service's notes) and its
+/// stages, newest first and bounded, each with its kind and round from the
+/// team's pinned bundle and its latest verdict: who gave it, pass or return,
+/// and the findings. Nothing is invented for a task that has none.
+pub(super) fn evidence(
+    config: &Config,
+    caller: &Caller,
+    args: &[String],
+) -> Result<Value, Problem> {
+    let options = Options::parse(args, &["--team", "--node"], &[])?;
+    options.nothing_else("evidence")?;
+    let node = options
+        .get("--node")
+        .ok_or_else(|| input::invalid("Select a task with --node."))?
+        .parse::<u32>()
+        .ok()
+        .filter(|node| *node > 0)
+        .ok_or_else(|| input::invalid("Invalid node."))?;
+    let store = Store::open(&config.state)?;
+    let identity = actor::resolve(&store, caller)?;
+    let team = actor::target_team(&store, &identity, options.team()?)?;
+    actor::lead_reader(&store, &identity, &team)?;
+    let pinned = store.team(&team)?.ok_or_else(|| not_found_team(&team))?;
+    let evidence = store.task_evidence(&team, node)?;
+    let stage_kind = |stage: &Node| {
+        pinned
+            .bundle
+            .pipelines
+            .iter()
+            .find(|pipeline| pipeline.id == stage.pipeline)
+            .and_then(|pipeline| pipeline.stages.get(stage.stage_index as usize))
+            .map(|step| step.kind)
+    };
+    let stages: Vec<Value> = evidence
+        .stages
+        .iter()
+        .map(|(stage, verdict)| {
+            json!({
+                "node": stage.id,
+                "kind": stage_kind(stage),
+                "round": stage.round,
+                "state": stage.state,
+                "verdict": verdict.as_ref().map(|verdict| json!({
+                    "generation": verdict.generation,
+                    "member": verdict.actor.get("member").and_then(Value::as_str),
+                    "pass": verdict.pass,
+                    "text": verdict.text,
+                })),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "ok": true,
+        "actor": actor::view(&identity.actor),
+        "team": team,
+        "revision": pinned.revision,
+        "node": node,
+        "report": evidence.report.map(|report| json!({
+            "generation": report.generation,
+            "member": evidence.node.implementer,
+            "commit": report.commit,
+            "text": report.text,
+            "notes": report.notes,
+        })),
+        "stages": stages,
+        "more_stages": evidence.more_stages,
+    }))
+}
