@@ -2259,7 +2259,7 @@ fn submit_core(
             // session's hooks run meanwhile (zerus-iitw8.5).
             guard = None;
             loop {
-                let shown = settle::settle(terminal, &claim, deadline).map_err(|composer| {
+                let shown = settle::settle(terminal, &claim, &pasted, deadline).map_err(|composer| {
                     residue = composer;
                     "Claude's composer never showed the pasted message settled; no Enter was pressed".to_string()
                 })?;
@@ -2276,7 +2276,7 @@ fn submit_core(
                 // Root was released during settle: only this fresh record can
                 // fence the remaining Enter. Keep the writer through the key.
                 terminating::check_mutation(&current)?;
-                if settle::still(terminal, &claim, &shown) {
+                if settle::still(terminal, &claim, &pasted, &shown) {
                     break;
                 }
                 // It changed meanwhile: settle again, unlocked, in the same window.

@@ -16,6 +16,15 @@
 //! neither wait holds the state lock (zerus-iitw8.5). Anything else is delivery
 //! uncertain, with the composer's bounded text as evidence, and is never
 //! replayed.
+//!
+//! A pasted message Claude keeps inline (at most three lines and about 800
+//! characters; longer ones become a `[Pasted text #N]` placeholder) can be
+//! taller than the composer, whose height follows the pane's (seven rows at
+//! 80x24, tmux's size for a session no client has attached to). Claude then
+//! shows only its last rows, under a `─── ↑ N more ───` bar, and its prompt
+//! row is out of view (zerus-33caz). Such a composer settles only when its
+//! shown rows, the rows the bar counts and the cursor are exactly Claude's
+//! own layout of this paste at the pane's width.
 use super::*;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -66,9 +75,221 @@ pub(in crate::state) fn pasting(screen: &str) -> bool {
     rows[last_rule + 1..].iter().any(|row| row.trim_start().starts_with("Pasting…"))
 }
 
+/// Claude's bar over composer rows out of view (Claude Code 2.1.326): an
+/// unindented `─── ↑ N more ───…` above the rows it shows, or `─── ↓ N more
+/// ───…` below them, as wide as the pane. Whether the rows are above, and N.
+fn more_bar(plain: &str) -> Option<(bool, usize)> {
+    let rest = plain.strip_prefix("─── ")?;
+    let (above, rest) = match rest.strip_prefix("↑ ") {
+        Some(rest) => (true, rest),
+        None => (false, rest.strip_prefix("↓ ")?),
+    };
+    let (count, rule) = rest.split_once(" more ")?;
+    if count.is_empty() || !count.bytes().all(|b| b.is_ascii_digit()) || rule.is_empty() || !rule.chars().all(|ch| ch == '─') {
+        return None;
+    }
+    Some((above, count.parse().ok().filter(|&count: &usize| count > 0)?))
+}
+
+/// What one frame shows of Claude's composer.
+enum View {
+    /// From its `❯` prompt row; `below` rows are out of view under it.
+    Whole { text: String, below: usize },
+    /// A composer taller than its view, under its `↑ N more` bar.
+    Scrolled(Scrolled),
+}
+
+/// The rows a scrolled composer shows (zerus-33caz).
+struct Scrolled {
+    /// Rows out of view above the shown ones, its prompt row first: never read.
+    above: usize,
+    /// Rows out of view below the cursor's (`↓ N more`), 0 under Claude's rule.
+    below: usize,
+    /// The shown rows without the two-cell indent, trimmed at the end.
+    rows: Vec<String>,
+    /// The screen row of the first shown row.
+    first: usize,
+    /// The bar's and the closing row's widths: the pane's columns.
+    width: usize,
+    closing: usize,
+}
+
+impl Scrolled {
+    /// Whether these rows can only be exactly `pasted`: Claude's own rows for
+    /// that text at this width, `above` of them out of view and every other
+    /// one shown, nothing out of view below, and the cursor right after its
+    /// last character. Rows out of view cannot be read: text typed into the
+    /// composer before the paste is excluded by the empty composer the send
+    /// gate saw under the state lock, as for a composer in full view, and by
+    /// this count wherever it adds a row; text typed later shows at the cursor.
+    fn holds(&self, pasted: &str, cursor_x: usize, cursor_y: usize) -> bool {
+        if self.below != 0 || self.rows.is_empty() || self.width != self.closing || self.width <= GUTTER * 2 {
+            return false;
+        }
+        let Some(layout) = claude_rows(pasted, self.width - GUTTER * 2) else {
+            return false;
+        };
+        let Some(last) = layout.last() else {
+            return false;
+        };
+        layout.len() == self.above + self.rows.len()
+            && layout[self.above..].iter().zip(&self.rows).all(|(row, shown)| row.text.trim_end() == shown)
+            && cursor_y == self.first + self.rows.len() - 1
+            && cursor_x == GUTTER + last.cells
+    }
+}
+
+/// The cells left of Claude's composer text (`❯ ` or the continuation indent),
+/// and the same margin at its right.
+const GUTTER: usize = 2;
+
+/// Claude's composer around `cursor_y`, from plain rows.
+fn claude_view(rows: &[String], cursor_y: usize) -> Option<View> {
+    let mut found = None;
+    for index in (0..=cursor_y.min(rows.len().checked_sub(1)?)).rev() {
+        if separator(&rows[index]) {
+            break;
+        }
+        if let Some((above, count)) = more_bar(&rows[index]) {
+            // A `↓` bar above the cursor closes a composer the cursor is not in.
+            found = above.then_some((index, Some(count)));
+            break;
+        }
+        let mut chars = rows[index].chars();
+        if matches!(chars.next(), Some('❯' | '>')) && chars.next().is_none_or(char::is_whitespace) {
+            found = Some((index, None));
+            break;
+        }
+    }
+    let (start, above) = found?;
+    let closes = |index: &usize| separator(&rows[*index]) || more_bar(&rows[*index]).is_some();
+    let below = |index: usize| rows.get(index).and_then(|row| more_bar(row)).filter(|(above, _)| !above).map_or(0, |(_, count)| count);
+    let Some(above) = above else {
+        // Claude's rule below the composer, or a blank row in simpler layouts.
+        let end = (start + 1..rows.len())
+            .find(|index| closes(index) || rows[*index].trim().is_empty())
+            .unwrap_or(rows.len());
+        let text = rows[start..end]
+            .iter()
+            .enumerate()
+            .map(|(n, row)| {
+                let row: String = if n == 0 { row.chars().skip(2).collect() } else { row.strip_prefix("  ").unwrap_or(row).to_owned() };
+                row.trim_end().to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Some(View::Whole { text: text.trim().to_owned(), below: below(end) });
+    };
+    // Every row up to Claude's closing rule or bar is a composer row.
+    let end = (start + 1..rows.len()).find(closes)?;
+    if more_bar(&rows[end]).is_some_and(|(above, _)| above) {
+        return None;
+    }
+    let shown = rows[start + 1..end]
+        .iter()
+        .map(|row| (row.is_empty() || row.starts_with("  ")).then(|| row.get(GUTTER..).unwrap_or("").trim_end().to_owned()))
+        .collect::<Option<Vec<_>>>()?;
+    Some(View::Scrolled(Scrolled {
+        above,
+        below: below(end),
+        rows: shown,
+        first: start + 1,
+        width: rows[start].chars().count(),
+        closing: rows[end].chars().count(),
+    }))
+}
+
+/// One row of Claude's composer: its text and its cells.
+struct Row {
+    text: String,
+    cells: usize,
+}
+
+/// Claude Code's composer rows for `text`, `columns` cells wide (2.1.326, its
+/// pane's columns less four), as its own screens show them
+/// (tests/fixtures/claude-composer-layout-2.1.326.json): each line wrapped as
+/// wrap-ansi does with `hard: true, trim: false`, then each wrapped row shown
+/// without its leading spaces. None for text this does not measure (a control,
+/// zero-width or combining character): such a composer is never proved.
+fn claude_rows(text: &str, columns: usize) -> Option<Vec<Row>> {
+    if columns == 0 {
+        return None;
+    }
+    let mut shown = Vec::new();
+    for line in text.split('\n') {
+        for (index, (text, cells)) in wrap_line(line, columns)?.into_iter().enumerate() {
+            let kept = if index == 0 { text.as_str() } else { text.trim_start_matches(' ') };
+            shown.push(Row { cells: cells - (text.len() - kept.len()), text: kept.to_owned() });
+        }
+    }
+    Some(shown)
+}
+
+/// The cells of one character, for those Claude and tmux measure alike.
+fn cells(ch: char) -> Option<usize> {
+    use unicode_width::UnicodeWidthChar;
+    ch.width().filter(|cells| matches!(cells, 1 | 2))
+}
+
+/// One line as wrap-ansi 9 wraps it with `hard: true, trim: false`: its rows
+/// and their cells, every space kept.
+fn wrap_line(line: &str, columns: usize) -> Option<Vec<(String, usize)>> {
+    let mut rows = vec![(String::new(), 0)];
+    for (index, word) in line.split(' ').enumerate() {
+        let length = word.chars().map(cells).sum::<Option<usize>>()?;
+        let mut row_length = rows.last()?.1;
+        if index != 0 {
+            if row_length >= columns {
+                rows.push((String::new(), 0));
+                row_length = 0;
+            }
+            let row = rows.last_mut()?;
+            row.0.push(' ');
+            row.1 += 1;
+            row_length += 1;
+        }
+        if length > columns {
+            // A word longer than a row starts on the next row only when that
+            // saves a break; it then fills each row to the last cell.
+            let remaining = columns - row_length;
+            if (length - 1) / columns < 1 + (length - remaining - 1) / columns {
+                rows.push((String::new(), 0));
+            }
+            let mut visible = rows.last()?.1;
+            let count = word.chars().count();
+            for (n, ch) in word.chars().enumerate() {
+                let cell = cells(ch)?;
+                if visible + cell <= columns {
+                    let row = rows.last_mut()?;
+                    row.0.push(ch);
+                    row.1 += cell;
+                } else {
+                    rows.push((ch.to_string(), cell));
+                    visible = 0;
+                }
+                visible += cell;
+                if visible == columns && n + 1 < count {
+                    rows.push((String::new(), 0));
+                    visible = 0;
+                }
+            }
+            continue;
+        }
+        if row_length + length > columns && row_length > 0 && length > 0 {
+            rows.push((String::new(), 0));
+        }
+        let row = rows.last_mut()?;
+        row.0.push_str(word);
+        row.1 += length;
+    }
+    Some(rows)
+}
+
 /// The text of Claude's composer around `cursor_y`: from its `❯` row to the
 /// rule below, without the prompt glyph or the continuation indent, bounded.
-/// None when no composer is recognized there.
+/// A composer taller than its view gives `↑ N more` and the rows it shows (and
+/// `↓ N more` for rows out of view below). None when no composer is
+/// recognized there.
 pub(in crate::state) fn composer_text(agent: &str, screen: &str, cursor_y: usize) -> Option<String> {
     Some(composer_full(agent, screen, cursor_y)?.chars().take(RESIDUE_CHARS).collect())
 }
@@ -77,33 +298,14 @@ pub(in crate::state) fn composer_text(agent: &str, screen: &str, cursor_y: usize
 fn composer_full(agent: &str, screen: &str, cursor_y: usize) -> Option<String> {
     let rows: Vec<String> = screen.lines().map(plain).collect();
     let text = match agent {
-        "claude" => {
-            let mut start = None;
-            for index in (0..=cursor_y.min(rows.len().checked_sub(1)?)).rev() {
-                if separator(&rows[index]) {
-                    break;
-                }
-                let mut chars = rows[index].chars();
-                if matches!(chars.next(), Some('❯' | '>')) && chars.next().is_none_or(char::is_whitespace) {
-                    start = Some(index);
-                    break;
-                }
+        "claude" => match claude_view(&rows, cursor_y)? {
+            View::Whole { text, below: 0 } => text,
+            View::Whole { text, below } => format!("{text}\n↓ {below} more"),
+            View::Scrolled(view) => {
+                let below = if view.below > 0 { format!("\n↓ {} more", view.below) } else { String::new() };
+                format!("↑ {} more\n{}{below}", view.above, view.rows.join("\n"))
             }
-            let start = start?;
-            // Claude's rule below the composer, or a blank row in simpler layouts.
-            let end = (start + 1..rows.len())
-                .find(|&index| separator(&rows[index]) || rows[index].trim().is_empty())
-                .unwrap_or(rows.len());
-            rows[start..end]
-                .iter()
-                .enumerate()
-                .map(|(n, row)| {
-                    let row: String = if n == 0 { row.chars().skip(2).collect() } else { row.strip_prefix("  ").unwrap_or(row).to_owned() };
-                    row.trim_end().to_owned()
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
+        },
         _ => {
             // Any other agent: the rows around the cursor, as evidence only.
             let from = cursor_y.saturating_sub(2);
@@ -138,51 +340,62 @@ pub(in crate::state) fn residue(terminal: &dyn backend::TerminalBackend, claim: 
 
 /// One frame of the composer: its text when it shows a settled paste
 /// (recognized, not empty, no `Pasting…`), and its text at all. None when
-/// the cursor moved during the read.
-fn settled(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, complete: bool) -> Option<(Option<String>, Option<String>)> {
+/// the cursor moved during the read. A composer taller than its view settles
+/// only when its rows prove it holds exactly `pasted` (zerus-33caz); one with
+/// rows out of view below the cursor never does.
+fn settled(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, pasted: &str, complete: bool) -> Option<(Option<String>, Option<String>)> {
     let (screen, x, y) = frame(terminal, claim)?;
     let text = if complete { composer_full(claim.agent, &screen, y) } else { composer_text(claim.agent, &screen, y) };
     let text = text.filter(|text| !text.is_empty());
-    let shown = text.clone().filter(|_| !pasting(&screen) && !composer_empty_for_model(claim.agent, &screen, x, y, None));
+    let rows: Vec<String> = screen.lines().map(plain).collect();
+    let holds = match (claim.agent == "claude").then(|| claude_view(&rows, y)).flatten() {
+        Some(View::Scrolled(view)) => view.holds(pasted, x, y),
+        Some(View::Whole { below, .. }) => below == 0 && !composer_empty_for_model(claim.agent, &screen, x, y, None),
+        None => !composer_empty_for_model(claim.agent, &screen, x, y, None),
+    };
+    let shown = text.clone().filter(|_| !pasting(&screen) && holds);
     Some((shown, text))
 }
 
-/// Whether the composer still shows exactly `text`, settled: the check made
-/// under the state lock immediately before the one Enter (zerus-iitw8.5).
-pub(in crate::state) fn still(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, text: &str) -> bool {
-    settled(terminal, claim, false).and_then(|(shown, _)| shown).as_deref() == Some(text)
+/// Whether the composer still shows exactly `text`, settled, for the paste of
+/// `pasted`: the check made under the state lock immediately before the one
+/// Enter (zerus-iitw8.5).
+pub(in crate::state) fn still(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, pasted: &str, text: &str) -> bool {
+    settled(terminal, claim, pasted, false).and_then(|(shown, _)| shown).as_deref() == Some(text)
 }
 
 /// Pending-Send's Enter fence compares the complete captured composer;
 /// the ordinary lane and bounded receipt previews retain their existing form.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(in crate::state) fn still_complete(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, text: &str) -> bool {
-    settled(terminal, claim, true).and_then(|(shown, _)| shown).as_deref() == Some(text)
+pub(in crate::state) fn still_complete(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, pasted: &str, text: &str) -> bool {
+    settled(terminal, claim, pasted, true).and_then(|(shown, _)| shown).as_deref() == Some(text)
 }
 
-/// Waits until the composer shows the paste settled: recognized, not empty,
-/// no `Pasting…`, and the same text on reads at least `STABLE` apart. Ok holds
-/// that text; Err the composer's last text when `deadline` passes first. Only
-/// the terminal is read, so the caller holds no lock meanwhile.
+/// Waits until the composer shows the paste of `pasted` settled: recognized,
+/// not empty, no `Pasting…`, and the same text on reads at least `STABLE`
+/// apart. Ok holds that text; Err the composer's last text when `deadline`
+/// passes first. Only the terminal is read, so the caller holds no lock
+/// meanwhile.
 pub(in crate::state) fn settle(
     terminal: &dyn backend::TerminalBackend,
     claim: &backend::InputClaim,
+    pasted: &str,
     deadline: Instant,
 ) -> std::result::Result<String, Option<String>> {
-    wait_settled(terminal, claim, deadline, false)
+    wait_settled(terminal, claim, pasted, deadline, false)
 }
 
 /// Same stable-read window, with no truncation in the pending-Send comparator.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(in crate::state) fn settle_complete(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, deadline: Instant) -> std::result::Result<String, Option<String>> {
-    wait_settled(terminal, claim, deadline, true)
+pub(in crate::state) fn settle_complete(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, pasted: &str, deadline: Instant) -> std::result::Result<String, Option<String>> {
+    wait_settled(terminal, claim, pasted, deadline, true)
 }
 
-fn wait_settled(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, deadline: Instant, complete: bool) -> std::result::Result<String, Option<String>> {
+fn wait_settled(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim, pasted: &str, deadline: Instant, complete: bool) -> std::result::Result<String, Option<String>> {
     let mut seen: Option<(String, Instant)> = None;
     let mut last = None;
     loop {
-        if let Some((shown, text)) = settled(terminal, claim, complete) {
+        if let Some((shown, text)) = settled(terminal, claim, pasted, complete) {
             last = text.or(last);
             match (shown, &seen) {
                 (Some(text), Some((before, at))) if &text == before => {
@@ -533,10 +746,10 @@ mod tests {
         let before = format!("{prefix} original");
         let after = format!("{prefix} changed");
         let terminal = Frames::new(vec![(screen(&after, ""), 2, 2)]);
-        assert!(!still_complete(&terminal, &claim(), &before));
+        assert!(!still_complete(&terminal, &claim(), &before, &before));
         // The displayed composer, not its evidence preview, is the fence.
         let terminal = Frames::new(vec![(screen(&before, ""), 2, 2)]);
-        assert!(still_complete(&terminal, &claim(), &before));
+        assert!(still_complete(&terminal, &claim(), &before, &before));
         assert_eq!(composer_text("claude", &screen(&before, ""), 2).unwrap().chars().count(), RESIDUE_CHARS);
     }
 
@@ -601,13 +814,123 @@ mod tests {
         let settled = (screen(SETTLED, "paste again to expand"), 50, 2);
         let frames = Frames::new(vec![pasting_frame.clone(), pasting_frame.clone(), pasting_frame, settled]);
         let start = Instant::now();
-        assert_eq!(settle(&frames, &claim(), soon(3_000)), Ok(SETTLED.into()));
+        assert_eq!(settle(&frames, &claim(), "message", soon(3_000)), Ok(SETTLED.into()));
         assert!(start.elapsed() >= STABLE, "the settled text must hold for {STABLE:?}");
         // Even a composer settled from the first read holds for the whole window.
         let frames = Frames::new(vec![(screen(SETTLED, "paste again to expand"), 50, 2)]);
         let start = Instant::now();
-        assert_eq!(settle(&frames, &claim(), soon(3_000)), Ok(SETTLED.into()));
+        assert_eq!(settle(&frames, &claim(), "message", soon(3_000)), Ok(SETTLED.into()));
         assert!(start.elapsed() >= STABLE, "entered after {:?}", start.elapsed());
+    }
+
+    // zerus-33caz: Claude Code 2.1.326 screens captured from the private real
+    // TUI at 80x24 (tmux's size for a session no client has attached to) with
+    // this message pasted as hgs pastes it (`paste-buffer -p -r`). The message
+    // is taller than the composer: its last rows show under `─── ↑ 3 more ───`.
+    const TALL: &str = include_str!("../../../tests/fixtures/claude-composer-scrolled-message.txt");
+    /// The owner's shape: the earlier prompt rows are out of view.
+    const SCROLLED: &str = include_str!("../../../tests/fixtures/claude-composer-scrolled-2.1.326.txt");
+    /// A past prompt `❯ Hello fixture.` is still in view above the bar.
+    const SCROLLED_HISTORY: &str = include_str!("../../../tests/fixtures/claude-composer-scrolled-history-2.1.326.txt");
+    /// Pasted while Claude works, its past prompt in view, and after its Stop.
+    const SCROLLED_BUSY: &str = include_str!("../../../tests/fixtures/claude-composer-scrolled-busy-2.1.326.txt");
+    const SCROLLED_STOP: &str = include_str!("../../../tests/fixtures/claude-composer-scrolled-stop-2.1.326.txt");
+    /// The cursor moved up one row, three rows up (`↑ 2 more` and `↓ 1 more`),
+    /// and to the prompt row with the last rows hidden below (`↓ 3 more`).
+    const SCROLLED_MOVED: &str = include_str!("../../../tests/fixtures/claude-composer-scrolled-moved-2.1.326.txt");
+    const SCROLLED_BOTH: &str = include_str!("../../../tests/fixtures/claude-composer-scrolled-both-2.1.326.txt");
+    const HIDDEN_BELOW: &str = include_str!("../../../tests/fixtures/claude-composer-hidden-below-2.1.326.txt");
+
+    fn settle_tall(frames: &Frames, text: &str) -> std::result::Result<String, Option<String>> {
+        settle(frames, &claim(), text, soon(1_000))
+    }
+    fn still_tall(frames: &Frames, text: &str, shown: &str) -> bool {
+        still(frames, &claim(), text, shown)
+    }
+
+    #[test]
+    fn a_message_taller_than_the_composer_settles_on_this_paste() {
+        for (name, screen) in [("scrolled", SCROLLED), ("history", SCROLLED_HISTORY), ("busy", SCROLLED_BUSY), ("stop", SCROLLED_STOP)] {
+            let frames = Frames::new(vec![(screen.to_owned(), 18, 21)]);
+            let shown = settle_tall(&frames, TALL).unwrap_or_else(|composer| panic!("{name}: never settled: {composer:?}"));
+            // Never a past prompt in the conversation above the composer.
+            assert!(shown.ends_with("</zerus-message>"), "{name}: {shown:?}");
+            assert!(still_tall(&frames, TALL, &shown), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_scrolled_composer_is_evidence_of_its_shown_rows() {
+        for screen in [SCROLLED, SCROLLED_HISTORY] {
+            let text = composer_text("claude", screen, 21).expect("the shown composer rows");
+            assert!(text.starts_with("↑ 3 more\n11111111-2222-4333-8444-555555555555&amp;run="), "{text:?}");
+            assert!(text.ends_with("Вопрос закрыт.\n</zerus-message>"), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_scrolled_composer_settles_only_on_exactly_this_paste() {
+        let frames = |screen: &str, x: usize, y: usize| Frames::new(vec![(screen.to_owned(), x, y)]);
+        // Not where the paste leaves it: the cursor one row up, rows out of
+        // view below the cursor, or the prompt row shown over rows out of view.
+        for (name, screen, x, y) in [("moved", SCROLLED_MOVED, 16, 20), ("both", SCROLLED_BOTH, 16, 18), ("below", HIDDEN_BELOW, 9, 15)] {
+            assert!(settle_tall(&frames(screen, x, y), TALL).is_err(), "{name}");
+        }
+        // The owner's screen with the cursor reported a cell left of the end
+        // or a row above it: not after this paste's last character.
+        for (x, y) in [(17, 21), (18, 20)] {
+            assert!(settle_tall(&frames(SCROLLED, x, y), TALL).is_err(), "{x},{y}");
+        }
+        // Rows of another text: one more or fewer row out of view, rows that
+        // go on after the shown ones, text typed after the paste at the
+        // cursor, another shown row, an empty last row.
+        let shown = composer_text("claude", SCROLLED, 21).unwrap();
+        for text in [
+            format!("Hello.\n{TALL}"),
+            format!("{TALL}\n</zerus-message>"),
+            TALL.split_once('\n').unwrap().1.to_owned(),
+            format!("{TALL} and more"),
+            TALL.replace("Вопрос закрыт.", "Вопрос открыт."),
+            format!("{TALL}\n"),
+            String::new(),
+        ] {
+            assert!(settle_tall(&frames(SCROLLED, 18, 21), &text).is_err(), "{text:?}");
+            assert!(!still_tall(&frames(SCROLLED, 18, 21), &text, &shown), "{text:?}");
+        }
+        // The bar and Claude's closing rule are the pane's width: another
+        // width is another layout.
+        let rows: Vec<&str> = SCROLLED.lines().collect();
+        let closing = rows.iter().rposition(|row| separator(&plain(row))).unwrap();
+        let mut narrowed = rows.clone();
+        let shorter = rows[closing].replacen('─', "", 1);
+        narrowed[closing] = &shorter;
+        assert!(settle_tall(&frames(&narrowed.join("\n"), 18, 21), TALL).is_err());
+        // A paste still being processed is not settled.
+        let processing = SCROLLED.replace("⏵⏵ bypass permissions on", "Pasting…");
+        assert!(pasting(&processing));
+        assert!(settle_tall(&frames(&processing, 18, 21), TALL).is_err());
+    }
+
+    #[test]
+    fn claudes_composer_rows_are_the_rows_its_screens_show() {
+        // Rows and cursors Claude Code 2.1.326 itself showed for these texts.
+        let corpus: Value = serde_json::from_str(include_str!("../../../tests/fixtures/claude-composer-layout-2.1.326.json")).unwrap();
+        let cases = corpus["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 64);
+        for case in cases {
+            let name = case["name"].as_str().unwrap();
+            let columns = case["columns"].as_u64().unwrap() as usize;
+            let rows = claude_rows(case["text"].as_str().unwrap(), columns - GUTTER * 2).unwrap_or_else(|| panic!("{name}"));
+            let shown: Vec<&str> = rows.iter().map(|row| row.text.trim_end()).collect();
+            let captured: Vec<&str> = case["rows"].as_array().unwrap().iter().map(|row| row.as_str().unwrap()).collect();
+            assert_eq!(shown, captured, "{name} at {columns}");
+            assert_eq!(case["cursor"], json!([GUTTER + rows.last().unwrap().cells, rows.len() - 1]), "{name} at {columns}");
+        }
+        // Text this does not measure is never proved.
+        for text in ["tab\there", "carriage\rreturn", "e\u{301}", "zero\u{200b}width", "\u{1b}[1m"] {
+            assert!(claude_rows(text, 76).is_none(), "{text:?}");
+        }
+        assert!(claude_rows("x", 0).is_none());
     }
 
     #[test]
@@ -632,13 +955,13 @@ mod tests {
     #[test]
     fn a_composer_that_never_settles_is_never_entered() {
         let frames = Frames::new(vec![(screen("", "Pasting…"), 2, 2)]);
-        assert_eq!(settle(&frames, &claim(), soon(300)), Err(None));
+        assert_eq!(settle(&frames, &claim(), "message", soon(300)), Err(None));
         // An empty composer is not a settled paste either.
         let frames = Frames::new(vec![(screen("", "⏵⏵ bypass permissions on"), 2, 2)]);
-        assert_eq!(settle(&frames, &claim(), soon(300)), Err(None));
+        assert_eq!(settle(&frames, &claim(), "message", soon(300)), Err(None));
         // Text that keeps changing never settles; the last text is the evidence.
         let changing: Vec<_> = (0..40).map(|n| (screen(&format!("draft {n}"), "x"), 10, 2)).collect();
-        assert!(matches!(settle(&Frames::new(changing), &claim(), soon(300)), Err(Some(text)) if text.starts_with("draft")));
+        assert!(matches!(settle(&Frames::new(changing), &claim(), "message", soon(300)), Err(Some(text)) if text.starts_with("draft")));
     }
 
     #[test]

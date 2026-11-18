@@ -115,3 +115,93 @@ class NativeClaudeInput(unittest.TestCase):
         self.wait_for(lambda: len(self.native_requests) >= before + 1)
         self.assertEqual(len(self.native_requests), before + 1, self.native_requests[before:])
         self.assertEqual(self.native_requests[-1]['model'], model)
+
+
+# zerus-33caz: the shape of the stuck send, with synthetic identities. Three
+# lines and under 800 characters, so Claude keeps it in the composer instead of
+# a [Pasted text] placeholder, and taller than the composer of a 24-row pane:
+# Claude then shows only its last rows under a "─── ↑ 3 more ───" bar. The
+# Rust settle tests read the same message beside Claude's captured screens.
+TALL = (fixtures.REPO / 'tests/fixtures/claude-composer-scrolled-message.txt').read_text()
+LONG = 'Show the long fixture reply.'
+SLOW = 'Start the slow fixture turn.'
+
+
+@unittest.skipUnless(native.CLAUDE, 'Set HGS_CLAUDE_TEST_BIN for isolated native message coverage')
+class NativeClaudeTallInput(NativeClaudeInput):
+    """A message taller than the composer of an 80x24 pane (tmux's size for a
+    session no client has attached to), sent once the conversation above has
+    scrolled the earlier `❯` prompt out of view, as in the owner's pane."""
+    test_trailing_backslash_starts_one_turn_with_the_exact_message = None
+    test_multiline_message_ending_in_backslashes_is_preserved = None
+    test_leading_absolute_path_is_literal_message_text = None
+    test_native_refusal_has_an_opted_in_terminal_outcome = None
+    test_id_hidden_pending_settings_then_message_makes_one_model_call_and_keeps_defaults = None
+
+    def native_response_blocks(self, body):
+        messages = body.get('messages') or [{}]
+        last = json.dumps(messages[-1], ensure_ascii=False)
+        if SLOW in last:
+            # Held until the hgs paste lands, so the turn ends inside its window.
+            release = self.root / 'turn-release'
+            for _ in range(600):
+                if release.exists():
+                    break
+                time.sleep(.05)
+        if SLOW in last or LONG in last:
+            return [dict(type='text', text='Fixture complete.' + ''.join(
+                f'\n\nReply paragraph {n} of the long fixture answer.' for n in range(30)))]
+        return [dict(type='text', text='Fixture complete.')]
+
+    def ask(self, prompt):
+        self.tmux('send-keys', '-t', self.pane, '-l', prompt)
+        self.wait_for(lambda: prompt in self.screen())
+        time.sleep(.2)
+        self.tmux('send-keys', '-t', self.pane, 'Enter')
+        self.wait_for(lambda: self.accepted(prompt))
+
+    def replied(self):
+        return any(row.get('type') == 'assistant' and 'Reply paragraph 29' in json.dumps(row)
+                   for row in native.records(self.record['transcript']))
+
+    def assert_confirmed(self, payload, proofs):
+        try:
+            receipt = self.send(payload)
+        except AssertionError as error:
+            raise AssertionError(str(error) + '\n' + self.screen()) from error
+        self.assertEqual(receipt['status'], 'submitted', receipt)
+        self.assertIn(receipt.get('native'), proofs, receipt)
+        self.wait_for(lambda: self.accepted(TALL))
+        self.assertEqual(self.accepted(TALL), 1)
+        # Never resent: the same request returns its receipt.
+        self.assertEqual(self.send(payload), receipt)
+        self.assertEqual(self.accepted(TALL), 1)
+        return receipt
+
+    def test_tall_message_to_an_idle_claude_80x24_is_confirmed(self):
+        self.ask(LONG)
+        self.wait_for(lambda: self.replied() and re.search(r'^❯\s*$', self.screen(), re.M))
+        # The earlier prompt row is out of view, as in the owner's pane.
+        self.assertNotIn('❯ ' + LONG, self.screen())
+        self.assert_confirmed(self.payload(text=TALL), ('transcript',))
+
+    def test_tall_message_to_a_claude_finishing_its_turn_80x24_is_confirmed(self):
+        # The fixture's tmux releases the held reply right after the paste:
+        # Claude streams it and ends its turn while hgs waits for the composer.
+        self.script('tmux', '#!/bin/sh\n' + fixtures.TMUX + ' -S "' + str(self.socket) + '" -f /dev/null "$@"\n'
+                    'status=$?\n[ "$1" = paste-buffer ] && touch "' + str(self.root / 'turn-release') + '"\nexit $status\n')
+        self.ask(LONG)
+        self.wait_for(lambda: self.replied() and re.search(r'^❯\s*$', self.screen(), re.M))
+        self.tmux('send-keys', '-t', self.pane, '-l', SLOW)
+        self.wait_for(lambda: SLOW in self.screen())
+        time.sleep(.2)
+        self.tmux('send-keys', '-t', self.pane, 'Enter')
+        self.wait_for(lambda: any(SLOW in json.dumps(request.get('messages', [])[-1:], ensure_ascii=False)
+                                  for request in self.native_requests))
+        self.wait_for(lambda: re.search(r'^❯\s*$', self.screen(), re.M))
+        self.record.update(activity='busy', phase='working', last_event_at=time.time())
+        self.write_record()
+        try:
+            self.assert_confirmed(self.payload(text=TALL), ('transcript', 'queue'))
+        finally:
+            (self.root / 'turn-release').touch()
