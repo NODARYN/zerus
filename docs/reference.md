@@ -3066,6 +3066,10 @@ only while Terminal shows exactly that chooser, using its number key and, for
 Revise, pasting the feedback before Enter; Kimi's recorded decision, including
 the exact feedback, confirms delivery. A clipped or different chooser, or one
 already in Revise feedback mode, stays read-only with **Open Terminal**.
+Kimi Code 2.6.3 hands the agent an approved plan's ExitPlanMode result marked as
+a tool error ("ERROR: Tool execution failed." before its "Exited plan mode." text
+and the approved plan), whoever approved it, in Terminal or in Activity; plan mode
+does end, and Kimi records the decision as approved.
 
 Kimi CreateGoal approval shows the full objective and completion criterion literally,
 with Kimi's own mode choices for Always Ask or Ask When Needed. **Switch to Never
