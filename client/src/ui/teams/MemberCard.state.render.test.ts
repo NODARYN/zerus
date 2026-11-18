@@ -69,3 +69,22 @@ it("handwritten_a_closed_stop_of_a_member_the_person_stopped_shows_why", () => {
   expect(item(host, "Swap…").getAttribute("aria-disabled")).not.toBe("true");
   expect(item(host, "Swap…").getAttribute("aria-describedby")).toBeNull();
 });
+
+it("the member line wraps its state and menu under the name instead of squeezing it", async () => {
+  const { readFileSync } = await import("node:fs");
+  // Vitest serves CSS imports empty: the stylesheets are read as they ship.
+  for (const file of ["teams.css", "team-member-link.css"]) {
+    const style = document.createElement("style");
+    // happy-dom skips rules inside @layer: the one layer wrapper is unwrapped, the rules stay as shipped.
+    const css = readFileSync(`${process.cwd()}/src/ui/styles/${file}`, "utf8");
+    const layer = css.match(/@layer\s+[\w-]+\s*\{/);
+    style.textContent = layer ? css.slice(0, layer.index) + css.slice(layer.index! + layer[0].length, css.lastIndexOf("}")) : css;
+    document.head.append(style);
+  }
+  try {
+    const host = setup(member({ state: "paused", person_stopped: false }));
+    const line = host.querySelector<HTMLElement>(".team-member-line")!;
+    expect(getComputedStyle(line).flexWrap).toBe("wrap");
+    expect(getComputedStyle(host.querySelector<HTMLElement>(".team-member-state")!).flexShrink).toBe("0");
+  } finally { document.head.replaceChildren(); }
+});
