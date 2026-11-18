@@ -401,7 +401,7 @@ pub(super) fn run(
     pinned_session_read(state, deadline, |state, r| {
         let row = if id.is_empty() {
             // A legacy record may have only the current catalog label.
-            r.label(state, hint)?.filter(|value| unarchived(value))
+            r.label(state, hint)?.filter(unarchived)
         } else if canonical(id) {
             match by_handle(state, id, agent, r)? {
                 Some(record) => Some(record),
