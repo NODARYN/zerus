@@ -55,7 +55,11 @@ fn find_run_locked(name: &str, run: &str) -> Result<Option<String>> {
 /// conveys no authority to resume. A cold read has its own small inspection
 /// budget and requests the worker even if no matching body fits that budget.
 pub(crate) fn member_archive_pending(state: &Path, session: &str, launch: &str) -> Result<bool> {
-    check_root(state)?;
+    // The worker repairs its own state root. A caller reading a different
+    // root retains the binding result from that root's native observation.
+    if check_root(state).is_err() {
+        return Ok(false);
+    }
     if !canonical_id(session) || !canonical_id(launch) {
         return Err(INCOMPLETE.into());
     }
