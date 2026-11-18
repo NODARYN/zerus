@@ -1231,7 +1231,8 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         // Value per prepared recipe. Conversion cannot refresh the source.
         recipes.push((name, spec, binding, new_run, source.into_fence()));
     }
-    let _guard = lock(None)?;
+    let guard = lock(None)?;
+    let mut started = None;
     for (name, spec, original_binding, new_run, source) in recipes {
         let changed = || format!("{name}: saved source changed or is unavailable; select the session again before resuming");
         let current_snapshot = live()?;
@@ -1257,10 +1258,113 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         } else {
             if let Some(scope)=scope {scope.changing();}
             backend::current().start(&spec)?;
-            if let Some(scope)=scope {scope.result(&name,&new_run,string(&current,"conversation_id"),None);} else {println!("hgs: resuming {name}");}
+            if scope.is_some() {
+                started = Some((
+                    name,
+                    spec.name,
+                    new_run,
+                    string(&current, "conversation_id").to_owned(),
+                ));
+            } else {
+                println!("hgs: resuming {name}");
+            }
         }
     }
+    // The supervisor writes its record under this same lock.
+    drop(guard);
+    if let (Some(scope), Some((name, terminal, run, conversation))) = (scope, started) {
+        supervisor_started(&name, &terminal, &run, scope, SUPERVISOR_START_WAIT)?;
+        scope.result(&name, &run, &conversation, None);
+    }
     Ok(0)
+}
+
+/// How long a scoped resume follows its new run before it reports, well
+/// within the 30 s the desktop gives its child (the phone and Teams give
+/// 45 s): a run still starting in a terminal positively alive by then is
+/// reported, and the caller's own wait follows it (zerus-5sl7r).
+const SUPERVISOR_START_WAIT: Duration = Duration::from_secs(10);
+/// The bound of one terminal observation within that wait.
+const TERMINAL_PROBE_WAIT: Duration = Duration::from_secs(2);
+
+/// A scoped resume (`hgs session-action`, whose receipt the desktop and the
+/// phone act on) follows the exact run it started until that run's
+/// supervisor wrote the session's record of it (zerus-5sl7r), and reports
+/// only what it observed exactly:
+/// - the record names the run: completed;
+/// - the terminal is absent by its own answer, twice in a row, while the
+///   record still names the stopped run it resumed (the scope's): it
+///   started nothing and left nothing, a definite failure; absent with a
+///   record that moved on otherwise: uncertain;
+/// - its command ended and its dead pane stays: uncertain;
+/// - at the end of `wait` a terminal positively alive is a slow start (a
+///   login shell, its hooks or the state lock before the first record):
+///   completed, as an unscoped resume reports at once, and the caller's
+///   readiness wait follows the run; one never observed exactly then is
+///   uncertain.
+///
+/// A failed, refused or late observation ([`backend::TerminalState::Unknown`])
+/// is never absence: it only keeps the wait. Each observation is bounded by
+/// [`TERMINAL_PROBE_WAIT`] and what is left of `wait`.
+fn supervisor_started(
+    name: &str,
+    terminal: &str,
+    run: &str,
+    scope: &session_action::Scope,
+    wait: Duration,
+) -> Result<()> {
+    use backend::TerminalState;
+    let recorded = || read(name).is_ok_and(|record| string(&record, "run_id") == run);
+    let until = Instant::now() + wait;
+    let mut absent_before = false;
+    loop {
+        if recorded() {
+            return Ok(());
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        let state = backend::current().terminal_state(
+            terminal,
+            TERMINAL_PROBE_WAIT
+                .min(left)
+                .max(Duration::from_millis(200)),
+        );
+        // Its record may have landed during the observation.
+        if state != TerminalState::Alive && recorded() {
+            return Ok(());
+        }
+        match state {
+            TerminalState::Absent if absent_before => {
+                if read(name).is_ok_and(|record| scope.check_base(&record).is_ok()) {
+                    scope.unchanged();
+                    return Err(format!(
+                        "{name}: the resumed terminal ended before its supervisor started; nothing was resumed"
+                    ));
+                }
+                return Err(format!(
+                    "{name}: the resumed terminal ended and the session's record no longer names the run it resumed; inspect the session"
+                ));
+            }
+            TerminalState::DeadPane => {
+                return Err(format!(
+                    "{name}: the resumed terminal's command ended before its supervisor started; its dead pane {terminal} remains"
+                ));
+            }
+            _ => {}
+        }
+        absent_before = state == TerminalState::Absent;
+        // A first absence is confirmed by one more observation, even at the
+        // end: the next one returns either way.
+        if Instant::now() >= until && !absent_before {
+            if state == TerminalState::Alive {
+                return Ok(());
+            }
+            return Err(format!(
+                "{name}: the resumed supervisor did not record its start within {} s and its terminal could not be observed; inspect the session",
+                wait.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// `hgs resume <session> --fresh`: the stopped session's own launch recipe,

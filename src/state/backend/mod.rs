@@ -169,6 +169,20 @@ pub(crate) struct PanePath {
     pub path: String,
 }
 
+/// What one bounded observation proves of a terminal (zerus-5sl7r). Only the
+/// terminal's own exact answer says it is absent or its command ended; a
+/// failed, refused or late observation is [`Self::Unknown`], never absence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalState {
+    /// It exists and its command still runs.
+    Alive,
+    /// It exists and its command ended (a dead pane kept).
+    DeadPane,
+    /// The terminal says no such session exists, or no server runs.
+    Absent,
+    Unknown,
+}
+
 /// One fact about a pane, as the terminal reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PaneField {
@@ -366,6 +380,11 @@ pub(crate) trait TerminalBackend: Sync {
 
     fn session_exists(&self, _name: &str) -> bool {
         false
+    }
+    /// What an observation of terminal `name` within `wait` proves
+    /// ([`TerminalState`]); a backend without exact answers knows nothing.
+    fn terminal_state(&self, _name: &str, _wait: std::time::Duration) -> TerminalState {
+        TerminalState::Unknown
     }
     /// The current name of session `$N`, None when it no longer exists.
     fn session_name(&self, _id: &str) -> Result<Option<String>> {

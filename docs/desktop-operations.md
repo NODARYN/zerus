@@ -529,7 +529,10 @@ one `hgs send <session> --json` bound to the run that resume returned:
   store and projected by the CLI's own observation rule
   (`session_action::status`, as `observe_original` applies it). Its exact
   `failed` receipt is Failed (`session_resume_refused`): the CLI writes it
-  only before its launch began, so nothing was launched. `claimed`,
+  before its launch began, or once the resumed terminal is absent by the
+  terminal's own answer, twice in a row, before any record of the new run
+  while the session's record still names the original run (zerus-5sl7r), so
+  nothing was resumed and nothing remains. `claimed`,
   `uncertain` and anything else are not. The send is Recorded only by the
   deferred send's own `input_receipts` rule for the bound stdin. NotStarted
   (`session_resume_not_started`) is only for a child the operation's own
@@ -551,9 +554,14 @@ the consent veto; the original child once through the shared runner, which
 marks its custody close-on-exec before anything else runs, so the terminal
 server and the agent it starts never hold it; and, after the physical drain,
 the receipt read from the held objects within one never-renewed 5-second
-deadline. `completed` means only that the agent's terminal started: the
-session's supervisor writes the resumed run's record after it, and the agent
-confirms its conversation later. A resume that is not recorded ends the send.
+deadline. `completed` means the resumed run's supervisor wrote the session's
+record of that run, or, for a start slower than `hgs session-action`'s own
+10-second wait (a login shell, its hooks or the state lock before that first
+record), that its terminal was positively alive then; the agent confirms its
+conversation later (zerus-5sl7r). A dead pane kept, or a terminal never
+observed exactly by then, is `uncertain`. Each observation of the terminal
+has a 2-second deadline and the C locale; a failed, refused or late one is
+never read as an absent terminal. A resume that is not recorded ends the send.
 
 After a recorded resume the same live operation waits, and only it. The wait
 has one budget of 180 seconds from the resume's drain, as long as the direct
@@ -566,9 +574,19 @@ checked before and after:
   live agent with no unconfirmed input or settings and no pause: the send may
   start (`state::resumed_readiness`, the CLI's own record gates, read without
   any effect);
-- not written yet, or starting or busy: read again;
+- not written yet, unreadable, or starting or busy: read again;
 - failed, ending or out of its conversation: the wait ends without the send
-  (`session_resume_ready_ended`).
+  (`session_resume_ready_ended`);
+- its recorded supervisor exactly exited (no process has its pid, or the one
+  that has it started at another time) without recording an end: the wait
+  ends without the send (`session_resume_ready_gone`, zerus-5sl7r). A start
+  that cannot be read proves nothing.
+
+A record that becomes unreadable after a readable one (an atomic update can
+fail one held read) ends the wait only once it stayed unreadable for 10
+seconds from its first unreadable read and the supervisor the last readable
+record named exactly exited (`session_resume_ready_gone`). A run never
+recorded keeps the wait to its budget.
 
 A resumed Codex stays pending until its first message, and only its terminal
 shows when it takes one (zerus-5wmh.66.4.10). For a Codex session the record

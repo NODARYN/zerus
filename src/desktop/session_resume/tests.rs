@@ -730,7 +730,7 @@ fn the_resume_observation_reads_only_the_exact_private_action_receipt() {
 /// changed session ends it.
 #[test]
 fn only_the_resumed_runs_ready_record_lets_the_send_start() {
-    use ready::{Readiness, READY_ENDED, ROOT_CHANGED};
+    use ready::{Readiness, READY_ENDED, READY_GONE, ROOT_CHANGED};
     let temp = tempfile::tempdir().unwrap();
     let parent = temp.path().canonicalize().unwrap();
     let state = state_root(&parent);
@@ -744,9 +744,10 @@ fn only_the_resumed_runs_ready_record_lets_the_send_start() {
         let roots = receipt::Roots::open(state, receipt::RESUME_FOLDER).unwrap();
         ready::read(&roots, plan, RESUMED, later(), never)
     };
-    // The original run's record still: not written yet.
+    // The original run's record still: none of the resumed run, which the
+    // runtime waits for only within its grace (zerus-5sl7r).
     session_record(&state, SESSION, "claude", RUN, json!({}));
-    assert_eq!(read(&state), Readiness::Waiting);
+    assert_eq!(read(&state), Readiness::Unrecorded);
     resumed_record(&state, false);
     assert_eq!(read(&state), Readiness::Waiting);
     resumed_record(&state, true);
@@ -774,6 +775,22 @@ fn only_the_resumed_runs_ready_record_lets_the_send_start() {
             "process_start": start}),
     );
     assert_eq!(read(&state), Readiness::Ended(READY_ENDED));
+    // Its supervisor no longer runs and recorded no end: gone, however its
+    // agent's fields read (zerus-5sl7r).
+    for ready in [false, true] {
+        resumed_record(&state, ready);
+        let path = state.join(format!(
+            "{:x}.json",
+            <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
+        ));
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["supervisor"] = json!({"pid": pid, "start": "an earlier process"});
+        session_record(&state, SESSION, "claude", RESUMED, record.clone());
+        assert_eq!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
+        record["supervisor"] = json!({"pid": pid, "start": start});
+        session_record(&state, SESSION, "claude", RESUMED, record);
+        assert_ne!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
+    }
     // A replaced root ends the wait.
     resumed_record(&state, true);
     let roots = receipt::Roots::open(&state, receipt::RESUME_FOLDER).unwrap();
@@ -814,9 +831,10 @@ fn a_resumed_codex_is_ready_only_by_the_sends_own_observation() {
             reply.map(<[u8]>::to_vec)
         })
     };
-    // Its resumed record is not written yet: nothing is observed.
+    // No record of its resumed run: nothing is observed (zerus-5sl7r: the
+    // runtime waits for one only within its grace).
     session_record(&state, CODEX, "codex", RUN, json!({}));
-    assert_eq!(read(Some(OBSERVED_READY), later()), Readiness::Waiting);
+    assert_eq!(read(Some(OBSERVED_READY), later()), Readiness::Unrecorded);
     assert!(asked.borrow().is_empty());
     // Pending its first message, the record alone never says ready.
     codex_pending_record(&state, CODEX);
@@ -1459,6 +1477,158 @@ mod actor {
             );
             assert!(f.row(&original).send.is_none(), "{name}: never reserved");
             assert_eq!(ran.counts(), (1, 0), "{name}");
+        }
+    }
+
+    /// zerus-5sl7r: the wait ends early only on exact evidence that the
+    /// resumed run is gone. A record naming a supervisor that exited ends it
+    /// at once; a read gap ends it only after the grace, measured from its
+    /// first unreadable sample, and only when the last proven supervisor
+    /// exited. A run never recorded, or a gap while its supervisor runs,
+    /// keeps the wait, and a record readable again still sends.
+    #[test]
+    fn only_exact_exit_evidence_ends_the_wait_for_a_resumed_run() {
+        let exited = || {
+            let child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            let (pid, birth) = (child.id(), started(child.id()));
+            assert!(!birth.is_empty());
+            (child, pid, birth)
+        };
+        let record_path = |state: &Path| {
+            state.join(format!(
+                "{:x}.json",
+                <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
+            ))
+        };
+        let busy = |state: &Path, supervisor: (u32, &str)| {
+            let pid = std::process::id();
+            session_record(
+                state,
+                SESSION,
+                "claude",
+                RESUMED,
+                json!({"expected_id": "", "activity": "busy", "phase": "working",
+                    "error": "", "pid": pid, "process_start": started(pid),
+                    "supervisor": {"pid": supervisor.0, "start": supervisor.1}}),
+            );
+        };
+        for case in [
+            "supervisor exited",
+            "never recorded",
+            "gap while its supervisor runs",
+            "gap after its supervisor exited",
+        ] {
+            let ran = Arc::new(Ran::default());
+            let resumes = ran.clone();
+            let mut f = Fixture::with(Arc::new(move |state, plan, args, input, _, _| {
+                assert_eq!(
+                    args[0], "session-action",
+                    "{case}: no send before the record"
+                );
+                resumes.resumes.fetch_add(1, Ordering::SeqCst);
+                action_receipt(state, plan, input, "completed");
+                Ended::Exited { code: 0 }
+            }));
+            let (budget, grace) = match case {
+                "never recorded" => (Duration::from_millis(1500), Duration::from_millis(100)),
+                "gap after its supervisor exited" => {
+                    (Duration::from_secs(120), Duration::from_secs(2))
+                }
+                _ => (Duration::from_secs(120), Duration::from_millis(100)),
+            };
+            f.runtime
+                .fixture_wait(budget, Duration::from_millis(5), runtime::CHAIN);
+            f.runtime.fixture_record_grace(grace);
+            let original = f.original();
+            f.admit(&original);
+            f.until(case, |f| {
+                f.row(&original).receipt.resume.step == Step::Recorded
+            });
+            let poll_for = |f: &mut Fixture, time: Duration| {
+                let until = Instant::now() + time;
+                while Instant::now() < until {
+                    f.runtime.poll(&mut f.store, Some(f.exclusion.clone()));
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+            let queued = |f: &Fixture| {
+                let receipt = f.row(&original).receipt;
+                assert!(!receipt.drained, "{case}: {receipt:?}");
+                assert_eq!(receipt.send.step, Step::Queued, "{case}");
+            };
+            let settled = |f: &mut Fixture, code: &str| {
+                f.until(case, |f| f.row(&original).receipt.drained);
+                let receipt = f.row(&original).receipt;
+                assert_eq!(
+                    (
+                        receipt.resume.step,
+                        receipt.send.step,
+                        receipt.code.as_str()
+                    ),
+                    (Step::Recorded, Step::NotStarted, code),
+                    "{case}"
+                );
+                assert_eq!(ran.counts(), (1, 0), "{case}");
+            };
+            match case {
+                "supervisor exited" => {
+                    let (mut child, pid, birth) = exited();
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    busy(&f.state, (pid, &birth));
+                    let recorded = Instant::now();
+                    settled(&mut f, ready::READY_GONE);
+                    assert!(recorded.elapsed() < Duration::from_secs(30), "{case}");
+                }
+                "never recorded" => {
+                    // No exit evidence: only the wait's own budget ends it.
+                    settled(&mut f, ledger::WAIT_EXPIRED);
+                }
+                "gap while its supervisor runs" => {
+                    let (mut child, pid, birth) = exited();
+                    busy(&f.state, (pid, &birth));
+                    poll_for(&mut f, Duration::from_millis(300));
+                    std::fs::remove_file(record_path(&f.state)).unwrap();
+                    // Many graces long: the gap alone never ends it.
+                    poll_for(&mut f, Duration::from_millis(1000));
+                    queued(&f);
+                    // Its record is readable again and ready: it sends.
+                    let sends = executor(ran.clone(), Resume::Completed { ready: true });
+                    f.runtime.fixture_executor(MACHINE, {
+                        let state = f.state.clone();
+                        Arc::new(move |plan, args, input, lock, resources| {
+                            sends(&state, plan, args, input, lock, resources)
+                        })
+                    });
+                    resumed_record(&f.state, true);
+                    f.until(case, |f| f.row(&original).receipt.drained);
+                    assert_eq!(f.row(&original).receipt.send.step, Step::Recorded, "{case}");
+                    assert_eq!(ran.counts(), (1, 1), "{case}");
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                }
+                "gap after its supervisor exited" => {
+                    let (mut child, pid, birth) = exited();
+                    busy(&f.state, (pid, &birth));
+                    // Readable for longer than the grace: none of it counts.
+                    poll_for(&mut f, Duration::from_millis(2500));
+                    queued(&f);
+                    std::fs::remove_file(record_path(&f.state)).unwrap();
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    let gap = Instant::now();
+                    // Within the grace from the first unreadable sample it
+                    // still waits, however long the wait ran before.
+                    poll_for(&mut f, Duration::from_millis(1000));
+                    queued(&f);
+                    settled(&mut f, ready::READY_GONE);
+                    assert!(gap.elapsed() >= Duration::from_secs(2), "{case}");
+                }
+                other => panic!("unknown case {other}"),
+            }
         }
     }
 
@@ -2508,6 +2678,12 @@ else:
     /// private tmux server. Before the fix the resumed pane's command named
     /// `/memfd:… (deleted)`, the pane died, the resume still said completed
     /// and the operation waited its whole budget without a send.
+    ///
+    /// The stricter waits act only on exact evidence: a terminal gone before
+    /// any record fails at once (`dies`), while one failed or hung
+    /// observation, a login shell slower than session-action's own wait, or a
+    /// moment's unreadable record of a run still starting all still send
+    /// (the independent review of #2510).
     #[cfg(target_os = "linux")]
     mod real_cli {
         use super::*;
@@ -2610,7 +2786,15 @@ else:
                 .map(Path::new)
                 .find(|p| p.is_dir())
                 .unwrap();
-            for case in ["resume", "replaced"] {
+            for case in [
+                "resume",
+                "replaced",
+                "dies",
+                "tmux_read_error",
+                "blocked_probe",
+                "slow_start",
+                "late_gap",
+            ] {
                 let dir = tempfile::Builder::new()
                     .prefix("hgs-rs-")
                     .tempdir_in(base)
@@ -2695,6 +2879,29 @@ else:
                 .find(|record| record["name"] == name && record.get("rename_shadow").is_none())
                 .unwrap_or(Value::Null)
         }
+        /// The file of the session's current record.
+        fn record_path_of(state: &Path, name: &str) -> PathBuf {
+            [
+                state.to_path_buf(),
+                state.join("bindings"),
+                state.join("sessions"),
+            ]
+            .iter()
+            .filter_map(|folder| folder.read_dir().ok())
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "json"))
+            .find(|path| {
+                std::fs::read(path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|record| {
+                        record["name"] == name && record.get("rename_shadow").is_none()
+                    })
+            })
+            .expect("the session's record")
+        }
         fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
             let until = Instant::now() + Duration::from_secs(60);
             while !done() {
@@ -2728,19 +2935,69 @@ else:
                     .into(),
                 std::env::var_os(SOCKET).expect("set by the parent").into(),
             );
+            // The reviewer's cases of zerus-5sl7r: the next `has-session`
+            // calls fail (`fail-reads` counts them down) or one hangs
+            // (`hang-one-read`), the login shell starts late (`shell-delay`),
+            // the agent starts late (`agent-delay`). Every `has-session` is
+            // logged with what the shim did.
             script(
                 "tmux",
                 format!(
-                    "#!/bin/sh\nexec {} -S {} -f /dev/null \"$@\"\n",
-                    server.0.display(),
-                    server.1.display()
+                    r#"#!/bin/sh
+if test "$1" = has-session && test -s '{root}/fail-reads'; then
+    left=$(cat '{root}/fail-reads')
+    if test "$left" -gt 0; then
+        echo $((left - 1)) > '{root}/fail-reads'
+        echo "$*: injected exit 127" >> '{root}/has-session.log'
+        echo 'synthetic tmux observation error' >&2
+        exit 127
+    fi
+fi
+if test "$1" = has-session && test -e '{root}/hang-one-read'; then
+    /bin/rm '{root}/hang-one-read'
+    echo "$*: injected hang" >> '{root}/has-session.log'
+    exec sleep 60
+fi
+if test "$1" = has-session; then
+    echo "$*: passed to tmux" >> '{root}/has-session.log'
+fi
+exec {program} -S {socket} -f /dev/null "$@"
+"#,
+                    root = root.display(),
+                    program = server.0.display(),
+                    socket = server.1.display()
                 ),
             );
             script(
-                "shell",
-                "#!/bin/sh\nshift\ncommand=$1; shift\ncase $command in exec\\ *) ;; *) command=\"exec $command\" ;; esac\nexec /bin/sh -c \"$command\" \"$@\"\n".into(),
+                "bash",
+                r#"#!/bin/sh
+if test -f "$HOME/shell-delay"; then
+    sleep "$(cat "$HOME/shell-delay")"
+fi
+shift
+command=$1; shift
+case $command in exec\ *) ;; *) command="exec $command" ;; esac
+exec /bin/sh -c "$command" "$@"
+"#
+                .into(),
             );
-            std::os::unix::fs::symlink(fake_agent(&cli), bin.join("claude")).unwrap();
+            let native = root.join("native");
+            std::fs::create_dir(&native).unwrap();
+            std::os::unix::fs::symlink(fake_agent(&cli), native.join("claude")).unwrap();
+            script(
+                "claude",
+                format!(
+                    r#"#!/bin/sh
+case "$1" in --help|--version) ;; *)
+    if test -f "$HOME/agent-delay"; then
+        sleep "$(cat "$HOME/agent-delay")"
+    fi ;;
+esac
+exec '{}' "$@"
+"#,
+                    native.join("claude").display()
+                ),
+            );
             // Single-threaded: nothing else runs in this process yet.
             for (key, value) in [
                 ("HOME", root.display().to_string()),
@@ -2751,7 +3008,7 @@ else:
                 ("HGS_TAB", "0".into()),
                 ("TERM", "xterm-256color".into()),
                 ("TMUX_TMPDIR", root.join("tmux").display().to_string()),
-                ("SHELL", bin.join("shell").display().to_string()),
+                ("SHELL", bin.join("bash").display().to_string()),
                 (
                     "PATH",
                     format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
@@ -2846,6 +3103,34 @@ else:
                 std::fs::rename(&next, &pinned).unwrap();
             }
 
+            if case == "dies" {
+                // The service names an executable that ends at once: the
+                // resumed terminal ends before any supervisor starts. The
+                // dead pane is not kept, so nothing of the resume remains.
+                let broken = bin.join("broken-hgs");
+                std::fs::write(&broken, "#!/bin/sh\nexit 3\n").unwrap();
+                mode(&broken, 0o755);
+                std::env::set_var("HGS_EXECUTABLE", &broken);
+                assert!(tmux(&["set-option", "-gwu", "remain-on-exit"])
+                    .status
+                    .success());
+            }
+            match case.as_str() {
+                // Observations fail, several in a row, while the pane lives.
+                "tmux_read_error" => {
+                    std::fs::write(root.join("shell-delay"), "3").unwrap();
+                    std::fs::write(root.join("fail-reads"), "3").unwrap();
+                }
+                // The first observation never ends by itself.
+                "blocked_probe" => {
+                    std::fs::write(root.join("shell-delay"), "3").unwrap();
+                    std::fs::write(root.join("hang-one-read"), "").unwrap();
+                }
+                // Past session-action's own wait, in a live terminal.
+                "slow_start" => std::fs::write(root.join("shell-delay"), "18").unwrap(),
+                "late_gap" => std::fs::write(root.join("agent-delay"), "14").unwrap(),
+                _ => (),
+            }
             let original = original_at(
                 &f.location.configuration,
                 &f.epoch,
@@ -2855,6 +3140,37 @@ else:
             );
             assert!(f.admit(&original).accepted);
             let admitted = Instant::now();
+            if case == "late_gap" {
+                // The run is recorded and still starting; past the grace of
+                // the wait's start, its record is unreadable for a moment,
+                // as an atomic update can make one held read.
+                f.until("the recorded resume", |f| {
+                    f.row(&original).receipt.resume.step == Step::Recorded
+                });
+                let recorded = Instant::now();
+                let path = record_path_of(&f.state, name);
+                f.until("the run to stay unready past the grace", |_| {
+                    recorded.elapsed() >= runtime::RECORD_GRACE + Duration::from_millis(200)
+                });
+                assert_eq!(f.row(&original).receipt.send.step, Step::Queued);
+                let aside = root.join("withheld-record");
+                std::fs::rename(&path, &aside).unwrap();
+                let withheld = Instant::now();
+                f.until("the withheld moment", |_| {
+                    withheld.elapsed() >= Duration::from_millis(350)
+                });
+                // A newer record written meanwhile stays.
+                if path.exists() {
+                    std::fs::remove_file(&aside).unwrap();
+                } else {
+                    std::fs::rename(&aside, &path).unwrap();
+                }
+                println!(
+                    "withheld the record {:?} after the resume was recorded, for {:?}",
+                    recorded.elapsed(),
+                    withheld.elapsed()
+                );
+            }
             f.until("the operation to settle", |f| {
                 f.row(&original).receipt.drained
             });
@@ -2875,7 +3191,26 @@ else:
             println!("panes:\n{panes}");
             assert!(!panes.contains("memfd"), "{panes}");
             match case.as_str() {
-                "resume" => {
+                "resume" | "tmux_read_error" | "blocked_probe" | "slow_start" | "late_gap" => {
+                    match case.as_str() {
+                        "tmux_read_error" | "blocked_probe" => {
+                            let log = std::fs::read_to_string(root.join("has-session.log"))
+                                .unwrap_or_default();
+                            println!("has-session calls:\n{log}");
+                            let injected = if case == "tmux_read_error" {
+                                "injected exit 127"
+                            } else {
+                                "injected hang"
+                            };
+                            assert_eq!(
+                                log.matches(injected).count(),
+                                if case == "tmux_read_error" { 3 } else { 1 },
+                                "{log}"
+                            );
+                        }
+                        "slow_start" => assert!(admitted.elapsed() >= Duration::from_secs(18)),
+                        _ => (),
+                    }
                     assert_eq!(
                         (
                             receipt.resume.step,
@@ -2928,6 +3263,27 @@ else:
                         (receipt.resume.step, receipt.send.step),
                         (Step::NotStarted, Step::NotStarted),
                         "{panes}"
+                    );
+                    assert!(
+                        !panes
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{name}\t"))),
+                        "{panes}"
+                    );
+                    assert_eq!(record_of(&f.state, name)["run_id"], run.as_str());
+                }
+                "dies" => {
+                    // A definite failure, never "completed": nothing started
+                    // and nothing remains, and the row settles at once.
+                    assert_eq!(
+                        (receipt.resume.step, receipt.send.step),
+                        (Step::Failed, Step::NotStarted),
+                        "{panes}"
+                    );
+                    assert!(
+                        admitted.elapsed() < Duration::from_secs(25),
+                        "{:?}",
+                        admitted.elapsed()
                     );
                     assert!(
                         !panes

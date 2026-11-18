@@ -56,6 +56,9 @@ pub(crate) use input::{Lookup as ReceiptLookup, Submission};
 // platforms only.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use input::{first_message_ready, resumed_readiness, Readiness as ResumedReadiness};
+// Only the session resume leaf, Linux and macOS, reads it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use input::{process_exited, resumed_supervisor};
 mod input_queue;
 mod journal;
 mod keep_warm;

@@ -326,6 +326,34 @@ pub(crate) fn resumed_readiness(record: &Value) -> Readiness {
     Readiness::Ready
 }
 
+/// The supervisor `record` names, by its pid and start, when it names both
+/// (zerus-5sl7r).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn resumed_supervisor(record: &Value) -> Option<(u32, String)> {
+    let supervisor = &record["supervisor"];
+    let start = string(supervisor, "start");
+    let pid = supervisor["pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .unwrap_or(0);
+    (pid > 0 && !start.is_empty()).then(|| (pid, start.to_owned()))
+}
+
+/// Whether the process `pid` that started at `start` exactly exited: no
+/// process has that pid, or the one that has it started at another time. A
+/// start that cannot be read proves nothing (zerus-5sl7r).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn process_exited(pid: u32, start: &str) -> bool {
+    exited_by(pid, start, crate::platform::process_start_time(pid))
+}
+
+/// [`process_exited`] by `now`, the start the pid has now: empty when no
+/// process has it, None when it cannot be read.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn exited_by(pid: u32, start: &str, now: Option<String>) -> bool {
+    pid > 0 && !start.is_empty() && now.is_some_and(|now| now != start)
+}
+
 /// Whether the agent has not confirmed the last input hgs typed (zerus-iitw8).
 /// Only an input-acceptance event (UserPromptSubmit, a queued prompt, a turn or
 /// task start) or hgs's own native proof sets `input_seen_at`; a busy agent's
@@ -2435,6 +2463,56 @@ mod tests {
             let args: Vec<String> = args.map(str::to_owned).into();
             let refusal = crate::state::dispatch(&args).unwrap_err();
             assert!(refusal.contains("is taken only as"), "{args:?}: {refusal}");
+        }
+    }
+
+    /// zerus-5sl7r: a recorded supervisor exited only by exact evidence: no
+    /// process has its pid, or the one that has it started at another time.
+    /// A live one, a start that cannot be read, or a record without both its
+    /// pid and start says nothing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_resumed_supervisor_exited_only_by_exact_evidence() {
+        let pid = std::process::id();
+        let record =
+            |supervisor: Value| json!({"name": "claude/resumed", "supervisor": supervisor});
+        let own = (pid, process_start(pid));
+        assert_eq!(
+            resumed_supervisor(&record(json!({"pid": own.0, "start": own.1}))),
+            Some(own.clone())
+        );
+        assert!(!process_exited(own.0, &own.1));
+        assert!(process_exited(pid, "another birth"));
+        // A finished child of this test: its pid no longer has that start.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let (gone, start) = (child.id(), process_start(child.id()));
+        assert!(!start.is_empty());
+        assert!(!process_exited(gone, &start));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(process_exited(gone, &start));
+        // An unreadable start is no evidence; an empty one is no process.
+        assert!(!exited_by(gone, &start, None));
+        assert!(exited_by(gone, &start, Some(String::new())));
+        assert!(!exited_by(gone, &start, Some(start.clone())));
+        assert!(!exited_by(0, &start, Some(String::new())));
+        assert!(!exited_by(gone, "", Some(String::new())));
+        for unknown in [
+            json!({}),
+            json!(null),
+            json!({"pid": pid}),
+            json!({"start": "birth"}),
+            json!({"pid": 0, "start": "birth"}),
+            json!({"pid": pid, "start": ""}),
+        ] {
+            assert_eq!(
+                resumed_supervisor(&record(unknown.clone())),
+                None,
+                "{unknown}"
+            );
         }
     }
 

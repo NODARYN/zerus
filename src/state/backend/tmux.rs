@@ -7,6 +7,7 @@
 use super::{
     ClientExit, ClientRow, DryRun, InputClaim, InputState, Key, LaunchSpec, Listing, PaneField,
     PaneInfo, PanePath, PaneRow, Paste, SessionRow, StageErrors, Target, TerminalBackend,
+    TerminalState,
 };
 use crate::cli::{Error, Result as CliResult};
 use crate::platform;
@@ -174,6 +175,29 @@ fn format(fields: &[PaneField]) -> String {
         .map(|field| field_format(*field))
         .collect::<Vec<_>>()
         .join("\t")
+}
+
+/// What tmux's answer to `has-session -t =NAME` proves (zerus-5sl7r). Every
+/// failure exits 1, so only tmux's own messages are absence: a missing session,
+/// a server with no session at all (`no current target`: nothing to resolve
+/// any target from) or a server that does not run. A refused socket, a failed
+/// program or a signal proves nothing.
+fn session_state(status: Option<i32>, stderr: &[u8]) -> TerminalState {
+    let text = String::from_utf8_lossy(stderr);
+    let text = text.trim();
+    match status {
+        Some(0) => TerminalState::Alive,
+        Some(1)
+            if text.starts_with("can't find session")
+                || text == "no current target"
+                || text.starts_with("no server running on ")
+                || (text.starts_with("error connecting to ")
+                    && text.ends_with("(No such file or directory)")) =>
+        {
+            TerminalState::Absent
+        }
+        _ => TerminalState::Unknown,
+    }
 }
 
 pub(in crate::state) fn pane_info_args(target: Target, fields: &[PaneField]) -> Vec<String> {
@@ -492,6 +516,37 @@ impl TerminalBackend for Tmux {
 
     fn session_exists(&self, name: &str) -> bool {
         platform::silent("tmux", &["has-session", "-t", &format!("={name}")])
+    }
+    /// `has-session`, then its pane's `pane_dead`, each bounded by what is
+    /// left of `wait` and read in the C locale (the error texts are tmux's own
+    /// and the C library's); a late observation is killed and unknown.
+    fn terminal_state(&self, name: &str, wait: std::time::Duration) -> TerminalState {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if crate::state::effort::picker_entered() {
+            return TerminalState::Unknown;
+        }
+        let until = std::time::Instant::now() + wait;
+        let run = |args: &[String]| {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            platform::output_until(Command::new("tmux").args(args).env("LC_ALL", "C"), left).ok()
+        };
+        let Some(exists) = run(&owned(&["has-session", "-t", &format!("={name}")])) else {
+            return TerminalState::Unknown;
+        };
+        match session_state(exists.status.code(), &exists.stderr) {
+            TerminalState::Alive => {}
+            state => return state,
+        }
+        match run(&pane_info_args(Target::Name(name), &[PaneField::Dead])) {
+            Some(dead) if dead.status.success() => {
+                match String::from_utf8_lossy(&dead.stdout).trim() {
+                    "0" => TerminalState::Alive,
+                    "1" => TerminalState::DeadPane,
+                    _ => TerminalState::Unknown,
+                }
+            }
+            _ => TerminalState::Unknown,
+        }
     }
     fn session_name(&self, id: &str) -> Result<Option<String>> {
         let output = picker(
@@ -839,6 +894,45 @@ impl TerminalBackend for Tmux {
 mod tests {
     use super::super::PaneField::*;
     use super::*;
+
+    /// zerus-5sl7r: only tmux's exact answers are absence; every other
+    /// failure of the observation is unknown, never a gone terminal.
+    #[test]
+    fn only_tmux_s_own_absence_answers_say_a_session_is_absent() {
+        use TerminalState::{Absent, Alive, Unknown};
+        for (status, stderr, state) in [
+            (Some(0), "", Alive),
+            (Some(1), "can't find session: claude/p/a\n", Absent),
+            (Some(1), "no current target\n", Absent),
+            (Some(1), "no current target: claude/p/a\n", Unknown),
+            (
+                Some(1),
+                "no server running on /tmp/tmux-1000/default\n",
+                Absent,
+            ),
+            (
+                Some(1),
+                "error connecting to /tmp/tmux-1000/default (No such file or directory)\n",
+                Absent,
+            ),
+            (
+                Some(1),
+                "error connecting to /tmp/tmux-1000/default (Permission denied)\n",
+                Unknown,
+            ),
+            (Some(1), "", Unknown),
+            (Some(1), "server exited unexpectedly\n", Unknown),
+            (Some(127), "can't find session: claude/p/a\n", Unknown),
+            (Some(2), "", Unknown),
+            (None, "can't find session: claude/p/a\n", Unknown),
+        ] {
+            assert_eq!(
+                session_state(status, stderr.as_bytes()),
+                state,
+                "{status:?} {stderr:?}"
+            );
+        }
+    }
 
     /// zerus-sa9qn.38: `--dry-run` prints commands a person may paste; each
     /// line passes a hostile session name, folder and variable to tmux as the

@@ -16,12 +16,18 @@
 //! A missing, late, oversized or malformed reply, or one that the send
 //! would not be taken now, is never ready: the wait reads again.
 //!
-//! `hgs session-action` records the resume once the agent's terminal
-//! started; the session's supervisor writes the resumed run's record after
-//! that. Until it exists the wait reads again. The record is read from the
-//! held original root, through the same proof of exactly one record as the
-//! target check, with the root checked before and after; a replaced root
-//! ends the wait.
+//! `hgs session-action` records the resume once the resumed run's
+//! supervisor wrote the session's record of that run, or, for a slow start,
+//! while its terminal is positively alive (zerus-5sl7r); until the record
+//! exists the wait reads again. A record whose supervisor exactly exited (no
+//! process has its pid, or one with another start) and that records no end
+//! ends the wait at once: waiting longer would only hold every later
+//! operation behind it. A record that cannot be read
+//! ([`Readiness::Unrecorded`]) proves nothing by itself; each readable one
+//! names its supervisor ([`Supervisor`]) for the runtime's rule on a read gap.
+//! The record is read from the held original root, through the same proof of
+//! exactly one record as the target check, with the root checked before and
+//! after; a replaced root ends the wait.
 use super::receipt::Roots;
 use crate::state::ResumedReadiness;
 use serde_json::json;
@@ -30,6 +36,9 @@ use zerus_client_core::desktop::session_resume::Plan;
 
 /// The resumed session failed, ended or left its conversation.
 pub(super) const READY_ENDED: &str = "session_resume_ready_ended";
+/// The resumed run is gone without recording an end: its recorded
+/// supervisor exactly exited (zerus-5sl7r).
+pub(super) const READY_GONE: &str = "session_resume_ready_gone";
 /// The state path no longer names the held original root.
 pub(super) const ROOT_CHANGED: &str = "session_resume_root_changed";
 /// The read itself was lost (its worker ended without a result).
@@ -45,9 +54,11 @@ pub(super) enum Readiness {
     /// observed session: the send's own observation says so, and its record
     /// shows it has not ended).
     Ready,
-    /// Not yet: its record is not written yet, or the agent is still
-    /// starting or busy. Read again.
+    /// Not yet: the agent is still starting or busy. Read again.
     Waiting,
+    /// No record of the resumed run could be read (none yet, a read gap or
+    /// none proven): no evidence either way. Read again.
+    Unrecorded,
     /// The wait ends without the send, for the named reason.
     Ended(&'static str),
 }
@@ -62,13 +73,31 @@ struct Observed {
     _reason: String,
 }
 
+/// A resumed run's supervisor, by the pid and start its record names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Supervisor(u32, String);
+
+impl Supervisor {
+    /// Whether it exactly exited ([`crate::state::process_exited`]); a start
+    /// that cannot be read proves nothing.
+    pub(super) fn exited(&self) -> bool {
+        crate::state::process_exited(self.0, &self.1)
+    }
+}
+
+/// What the selected session's record of a run says.
+enum Record {
+    /// None could be read.
+    Missing,
+    /// Its supervisor exactly exited, and it records no end.
+    Gone,
+    /// It is there, by the record rule alone, with the supervisor it names.
+    Is(ResumedReadiness, Option<Supervisor>),
+}
+
 /// The selected session's record of `run` by the record rule alone (no
-/// terminal), from the held root: `None` until it exists.
-fn recorded(
-    roots: &Roots,
-    plan: &Plan,
-    run: &str,
-) -> Result<Option<ResumedReadiness>, &'static str> {
+/// terminal), from the held root.
+fn recorded(roots: &Roots, plan: &Plan, run: &str) -> Result<Record, &'static str> {
     if !roots.root_current() {
         return Err(ROOT_CHANGED);
     }
@@ -81,7 +110,16 @@ fn recorded(
     if !roots.root_current() {
         return Err(ROOT_CHANGED);
     }
-    Ok(record.map(|record| crate::state::resumed_readiness(&record)))
+    let Some(record) = record else {
+        return Ok(Record::Missing);
+    };
+    let supervisor =
+        crate::state::resumed_supervisor(&record).map(|(pid, start)| Supervisor(pid, start));
+    Ok(match crate::state::resumed_readiness(&record) {
+        ResumedReadiness::Ended => Record::Is(ResumedReadiness::Ended, supervisor),
+        _ if supervisor.as_ref().is_some_and(Supervisor::exited) => Record::Gone,
+        readiness => Record::Is(readiness, supervisor),
+    })
 }
 
 /// Reads the resumed run from the held root. For an observed session whose
@@ -95,13 +133,25 @@ pub(super) fn read(
     until: Instant,
     observe: impl FnOnce(&[String], &[u8], Instant) -> Option<Vec<u8>>,
 ) -> Readiness {
+    read_supervised(roots, plan, run, until, observe).0
+}
+
+/// [`read`], with the supervisor the record read last names.
+pub(super) fn read_supervised(
+    roots: &Roots,
+    plan: &Plan,
+    run: &str,
+    until: Instant,
+    observe: impl FnOnce(&[String], &[u8], Instant) -> Option<Vec<u8>>,
+) -> (Readiness, Option<Supervisor>) {
     match recorded(roots, plan, run) {
-        Err(code) => Readiness::Ended(code),
-        Ok(None) => Readiness::Waiting,
-        Ok(Some(ResumedReadiness::Ended)) => Readiness::Ended(READY_ENDED),
-        Ok(Some(_)) if plan.observed() => observed(roots, plan, run, until, observe),
-        Ok(Some(ResumedReadiness::Ready)) => Readiness::Ready,
-        Ok(Some(ResumedReadiness::Starting)) => Readiness::Waiting,
+        Err(code) => (Readiness::Ended(code), None),
+        Ok(Record::Missing) => (Readiness::Unrecorded, None),
+        Ok(Record::Gone) => (Readiness::Ended(READY_GONE), None),
+        Ok(Record::Is(ResumedReadiness::Ended, _)) => (Readiness::Ended(READY_ENDED), None),
+        Ok(Record::Is(_, _)) if plan.observed() => observed(roots, plan, run, until, observe),
+        Ok(Record::Is(ResumedReadiness::Ready, supervisor)) => (Readiness::Ready, supervisor),
+        Ok(Record::Is(ResumedReadiness::Starting, supervisor)) => (Readiness::Waiting, supervisor),
     }
 }
 
@@ -114,7 +164,7 @@ fn observed(
     run: &str,
     until: Instant,
     observe: impl FnOnce(&[String], &[u8], Instant) -> Option<Vec<u8>>,
-) -> Readiness {
+) -> (Readiness, Option<Supervisor>) {
     let input = json!({"expected_run_id": run, "expected_conversation_id": plan.conversation_id})
         .to_string();
     let reply = observe(&plan.observe_args(), input.as_bytes(), until);
@@ -124,10 +174,12 @@ fn observed(
                 && serde_json::from_slice::<Observed>(&bytes).is_ok_and(|reply| reply.ready)
         });
     match recorded(roots, plan, run) {
-        Err(code) => Readiness::Ended(code),
-        Ok(Some(ResumedReadiness::Ended)) => Readiness::Ended(READY_ENDED),
-        Ok(Some(_)) if ready => Readiness::Ready,
-        Ok(_) => Readiness::Waiting,
+        Err(code) => (Readiness::Ended(code), None),
+        Ok(Record::Gone) => (Readiness::Ended(READY_GONE), None),
+        Ok(Record::Is(ResumedReadiness::Ended, _)) => (Readiness::Ended(READY_ENDED), None),
+        Ok(Record::Is(_, supervisor)) if ready => (Readiness::Ready, supervisor),
+        Ok(Record::Missing) => (Readiness::Unrecorded, None),
+        Ok(Record::Is(_, supervisor)) => (Readiness::Waiting, supervisor),
     }
 }
 
@@ -136,8 +188,8 @@ fn observed(
 /// that it has not ended (its observation ran just before the spawn turn).
 pub(super) fn current(roots: &Roots, plan: &Plan, run: &str) -> bool {
     match recorded(roots, plan, run) {
-        Ok(Some(ResumedReadiness::Ready)) => true,
-        Ok(Some(ResumedReadiness::Starting)) => plan.observed(),
+        Ok(Record::Is(ResumedReadiness::Ready, _)) => true,
+        Ok(Record::Is(ResumedReadiness::Starting, _)) => plan.observed(),
         _ => false,
     }
 }

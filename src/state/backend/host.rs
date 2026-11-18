@@ -79,7 +79,7 @@
 use super::{
     ClientExit, ClientRow, DryRun, InputClaim, InputState, Key, LaunchSpec, Listing, PaneField,
     PaneInfo, PanePath, PaneRow, Paste, SessionRow, StageErrors, Target, TerminalBackend,
-    RUN_CHANGED,
+    TerminalState, RUN_CHANGED,
 };
 use crate::{
     cli::{Error, Result as CliResult},
@@ -733,6 +733,20 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
             self.resolve(protocol::Target::Name(name.into())),
             Ok(Some(_))
         )
+    }
+    /// Absent only by the host's own answer (no host runs, or it knows no
+    /// such session); a failed call is unknown (zerus-5sl7r). Its calls are
+    /// not bounded by `wait`: the connector request takes no deadline.
+    fn terminal_state(&self, name: &str, _wait: std::time::Duration) -> TerminalState {
+        match self.resolve(protocol::Target::Name(name.into())) {
+            Ok(None) => TerminalState::Absent,
+            Err(_) => TerminalState::Unknown,
+            Ok(Some(_)) => match self.details(Target::Name(name)) {
+                Ok(details) if details.dead => TerminalState::DeadPane,
+                Ok(_) => TerminalState::Alive,
+                Err(_) => TerminalState::Unknown,
+            },
+        }
     }
     fn session_name(&self, id: &str) -> Result<Option<String>> {
         self.resolve(protocol::Target::Session(id.into()))
