@@ -513,6 +513,80 @@ fn lead_staffing_fixture() {
         "closed"
     );
     assert!(h.store.cards(TEAM, 200, None).unwrap().rows.is_empty());
+    // Preserve another report in the same generation and a different inbox
+    // kind on the same parent and generation, all written by the product.
+    h.report(19, "m2");
+    let unrelated = h
+        .store
+        .queue(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|node| node.stage_of == Some(19))
+        .unwrap();
+    let creation = uuid::Uuid::new_v4().to_string();
+    h.run(
+        &service(),
+        Operation::StageTaskIntent {
+            node: unrelated.id,
+            effect_request_id: creation.clone(),
+        },
+    )
+    .unwrap();
+    let other_report = h
+        .run(
+            &service(),
+            Operation::StageTaskOutcome {
+                effect_request_id: creation,
+                outcome: StageTaskOutcome::Refused {
+                    reason: "The other review could not start.".into(),
+                },
+            },
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    let question = h
+        .run(
+            &person(),
+            Operation::Ask {
+                node: 20,
+                generation: release.generation,
+                text: "Is this review ready?".into(),
+            },
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    h.run(
+        &lead,
+        Operation::Reply {
+            item: question,
+            text: "The replacement is reviewing it.".into(),
+        },
+    )
+    .unwrap();
+    let controls = |inbox: Vec<crate::teams::store::InboxItem>| {
+        inbox
+            .into_iter()
+            .filter(|item| item.seq == other_report || item.seq == question)
+            .collect::<Vec<_>>()
+    };
+    let before = controls(h.store.inbox(TEAM, 200, None).unwrap().rows);
+    assert_eq!(before.len(), 2);
+    assert!(before.iter().all(|item| item.generation == release.generation));
+    let other = before.iter().find(|item| item.seq == other_report).unwrap();
+    assert_eq!(
+        (other.node, other.kind.as_str(), other.state.as_str()),
+        (19, "report", "open")
+    );
+    let answered = before.iter().find(|item| item.seq == question).unwrap();
+    assert_eq!(answered.node, 20);
+    assert_eq!(
+        answered.reply.as_deref(),
+        Some("The replacement is reviewing it.")
+    );
+
     // A separate end of the replacement reopens the parent's report.
     // That ordinary retirement grants no provider-stop reassignment.
     h.observe(assigned, TaskStage::InProgress);
@@ -521,6 +595,7 @@ fn lead_staffing_fixture() {
     let reopened = inbox.iter().find(|item| item.seq == release.seq).unwrap();
     assert_eq!(reopened.state, "open");
     assert!(reopened.notes.is_empty());
+    assert_eq!(controls(inbox), before, "another inbox item changed");
     for node in [21, assigned] {
         refused(
             h.run(
