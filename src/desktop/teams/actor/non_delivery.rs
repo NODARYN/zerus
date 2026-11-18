@@ -1,6 +1,7 @@
 //! Reconcile only recorded proof of non-delivery. This never offers input.
 use super::*;
 use crate::teams::{ops::HandoutOutcome, store::EffectIntent};
+use zerus_team_plan::problem::code::{INVALID_STATE, STALE_REVISION};
 impl Runtime {
     pub(super) fn non_deliveries(
         &mut self,
@@ -23,14 +24,7 @@ impl Runtime {
         if store.has_stale_reopen_notices(&team.id)? {
             match write(store, &team.id, Operation::CloseStaleReopenNotices, now) {
                 Ok(_) => (),
-                Err(error)
-                    if matches!(
-                        error.code.as_str(),
-                        code::STALE_REVISION | code::INVALID_STATE
-                    ) =>
-                {
-                    ()
-                }
+                Err(error) if matches!(error.code.as_str(), STALE_REVISION | INVALID_STATE) => (),
                 Err(error) => return Err(error),
             }
         }
@@ -65,10 +59,8 @@ impl Runtime {
         match write(store, &team.id, op, now) {
             Ok(_) => Ok(()),
             Err(error)
-                if matches!(
-                    error.code.as_str(),
-                    code::STALE_REVISION | code::INVALID_STATE
-                ) && !store.non_delivery_pending(&team.id, effect)? =>
+                if matches!(error.code.as_str(), STALE_REVISION | INVALID_STATE)
+                    && !store.non_delivery_pending(&team.id, effect)? =>
             {
                 Ok(())
             }
