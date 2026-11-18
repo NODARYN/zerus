@@ -3236,8 +3236,12 @@ from the catalog Claude Code caches in the account's profile. Zerus expands a
 section only when the native picker advertises that action, selects the model
 and effort, and applies them with its session-only choice (`s`). Enter on a model
 row saves new defaults; Zerus never uses that action or the typed `/model NAME`
-and `/effort LEVEL` shortcuts for a session change. An unconfirmed selection
-closes the recognized model picker with Escape while its original input authority
+and `/effort LEVEL` shortcuts for a session change. Zerus recognizes the picker
+by its **Select model** title below Claude's panel rule and by the keys it
+presses in the legend (`s to use this session only`, `Esc to cancel`, and
+`←/→ to adjust` for effort), not by its prose, which Claude Code rewords between
+releases; the `/effort` panel shares that legend under another title. An
+unconfirmed selection closes the recognized model picker with Escape while its original input authority
 is still valid. The change is confirmed by Claude's receipt in the exact conversation transcript and by
 its effort indicator when shown. In a conversation that already has replies, Claude
 warns that the next message re-reads the full history and uses more tokens: the

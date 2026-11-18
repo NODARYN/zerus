@@ -4,6 +4,7 @@
 The fake mirrors Claude Code 2.1.296: /model opens a picker whose Enter saves a
 new default and whose `s` key applies the selection to this session only. Each
 applied choice writes Claude's receipt to the conversation transcript.
+ClaudeSettings327 repeats every case with the picker text of Claude Code 2.1.327.
 """
 import json
 import os
@@ -35,14 +36,24 @@ current = 0; effort = 'medium'; text = ''; stage = ''; selected = 0; level = 1; 
 def show():
     rule = '─' * 100
     if stage == 'picker':
-        screen = '\x1b[2J\x1b[8;1H' + '▔' * 100 + '\r\n   Select model\r\n   Switch between Claude models. Your pick becomes the default for new sessions.\r\n\r\n'
+        # Claude Code 2.1.327 rewords the subtitle and Enter's action and moves
+        # the arrows' hint from the effort line into the legend.
+        layout_327 = (root / 'layout-2.1.327').exists()
+        session_only = not (root / 'no-session-only').exists()
+        subtitle = ('Your pick is the default for new sessions. For other models, use --model.' if layout_327
+                    else 'Switch between Claude models. Your pick becomes the default for new sessions.')
+        screen = '\x1b[2J\x1b[8;1H' + '▔' * 100 + '\r\n   Select model\r\n   ' + subtitle + '\r\n\r\n'
         for i, (label, description, _) in enumerate(ROWS):
             mark = label + (' ✔' if i == current else '')
             screen += ('   ❯ ' if i == selected else '     ') + str(i + 1) + '. ' + mark.ljust(25) + description + '\r\n'
         name = LEVELS[level]
-        screen += '\r\n   ' + GLYPHS[name] + ' ' + ('xHigh' if name == 'xhigh' else name.title()) + ' effort ←/→ to adjust\r\n\r\n'
-        screen += '   Enter to set as default'
-        if not (root / 'no-session-only').exists(): screen += ' · s to use this session only'
+        screen += '\r\n   ' + GLYPHS[name] + ' ' + ('xHigh' if name == 'xhigh' else name.title()) + ' effort'
+        screen += '\r\n\r\n' if layout_327 else ' ←/→ to adjust\r\n\r\n'
+        if layout_327:
+            screen += '   ←/→ to adjust · ' + ('s to use this session only · ' if session_only else '') + 'Enter to save'
+        else:
+            screen += '   Enter to set as default'
+            if session_only: screen += ' · s to use this session only'
         screen += ' · Esc to cancel'
     elif stage == 'dialog':
         hook = dialog == 'hook'
@@ -319,6 +330,14 @@ class ClaudeSettings(unittest.TestCase):
         self.assertEqual(self.received(), b'')
         info = self.inspect()
         self.assertEqual((info['pending_model'], info['pending_effort']), ('claude-haiku-5-5', 'xhigh'))
+
+
+class ClaudeSettings327(ClaudeSettings):
+    """The same contract against the reworded picker of Claude Code 2.1.327."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / 'layout-2.1.327').write_text('')
 
 
 if __name__ == '__main__':
