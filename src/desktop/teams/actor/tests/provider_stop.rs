@@ -344,6 +344,198 @@ fn card_fixture() {
         .contains("The service confirmed that the member stopped after a provider error.")));
 }
 
+#[test]
+fn lead_staffs_and_reassigns_the_quota_stopped_stage_once() {
+    real_rows::isolated("desktop::teams::actor::tests::provider_stop::lead_staffing_fixture");
+}
+
+#[test]
+#[ignore = "run by the private actor fixture"]
+fn lead_staffing_fixture() {
+    let (mut h, mut ports, record, other_effect) = stage("kimi");
+    crate::swarm::save_test_node_id(&ports.native.config, &ports.native.machine).unwrap();
+    let lead = h.bind("lead");
+    let stopped = hook(
+        &record,
+        "StopFailure",
+        json!({"error_type":"APIProviderRateLimitError","error_message":"429 Your weekly quota has been exhausted."}),
+        FAILURE,
+    );
+    assert_eq!(stopped["phase"], "error");
+    assert_eq!(stopped["provider_error"]["type"], "StopFailure");
+    assert_eq!(stopped["provider_error"]["error_kind"], "quota");
+    assert_eq!(stopped["provider_error"]["at"], FAILURE as f64 / 1000.0);
+    publish(&ports, &stopped);
+    pass(&mut h, &mut ports, FAILURE);
+    let inbox = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    let release = inbox
+        .iter()
+        .find(|item| item.node == 20 && item.kind == "report")
+        .unwrap();
+    assert_eq!(release.notes[0].parameters, ["m3", "Kimi", "20", "21"]);
+    assert!(h.store.attempt_holder(TEAM, 21).unwrap().is_none());
+    let old_stage = h.node(21);
+    let add = Operation::LeadAddMember {
+        role: "reviewer".into(),
+        agent: "codex".into(),
+        model: "seat-model".into(),
+        effort: "high".into(),
+        account: zerus_team_plan::catalog::AccountChoice::Named {
+            account: "review-account".into(),
+        },
+    };
+    let added = h.run(&lead, add).unwrap();
+    let member = added.member.unwrap();
+    assert_eq!(member, "m4");
+    let reassign = |member: &str| Operation::Reassign {
+        node: 21,
+        member: member.to_owned(),
+        reason: "Replace the quota-stopped reviewer.".into(),
+    };
+    assert!(
+        h.run(&lead, reassign(&member)).is_err(),
+        "launch and retirement are still pending"
+    );
+    h.cancel_fact(21);
+    assert!(!h
+        .store
+        .queue(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|n| n.id == 21));
+    refused(h.run(&lead, reassign(&member)), "invalid_state");
+    let (replacement, observed) =
+        crate::desktop::teams::tests::launch_codex_reviewer(&mut h, &member);
+    assert_eq!(replacement.agent, "codex");
+    publish(
+        &ports,
+        &save_session_as(
+            &replacement,
+            &observed.name,
+            &observed.session_id,
+            &observed.run_id,
+            &observed.conversation_id,
+        ),
+    );
+    refused(h.run(&lead, reassign("m2")), "invalid_state");
+    let assigned = h.run(&lead, reassign(&member)).unwrap().node.unwrap();
+    assert_eq!(assigned, 22);
+    let new_stage = h.node(assigned);
+    assert_eq!(
+        (new_stage.stage_of, new_stage.stage_index, new_stage.round),
+        (old_stage.stage_of, old_stage.stage_index, old_stage.round)
+    );
+    assert_eq!(new_stage.assignee.as_deref(), Some("m4"));
+    let journal = h.store.journal(TEAM, 200, None).unwrap().rows;
+    assert!(journal.iter().any(|row| row.kind == "reassign"
+        && row.refs.contains(&"node:21".to_owned())
+        && row.refs.contains(&"node:22".to_owned())));
+    refused(h.run(&lead, reassign(&member)), "invalid_state");
+
+    let creation = uuid::Uuid::new_v4().to_string();
+    h.run(
+        &service(),
+        Operation::StageTaskIntent {
+            node: assigned,
+            effect_request_id: creation.clone(),
+        },
+    )
+    .unwrap();
+    h.run(
+        &service(),
+        Operation::StageTaskOutcome {
+            effect_request_id: creation,
+            outcome: StageTaskOutcome::Created { task: task(22) },
+        },
+    )
+    .unwrap();
+    h.observe(assigned, TaskStage::Todo);
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let ready = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
+    assert!(
+        zerus_team_plan::ready::ready(&zerus_team_plan::ready::PlanView {
+            phases: &ready.phases,
+            nodes: &ready.nodes,
+            members: &[],
+            lead: &team.lead,
+            integration: team.settings.integration,
+        })
+        .contains(&assigned),
+        "replacement stage is not ready: {:?}",
+        h.node(assigned)
+    );
+    let availability =
+        super::super::ports::Ports::availability(&mut ports, &team, &replacement).unwrap();
+    assert_eq!(availability, super::super::ports::Availability::Free);
+    pass(&mut h, &mut ports, FAILURE + 4_500);
+    let deliveries = ports.deliveries.clone();
+    assert_eq!(deliveries.len(), 1, "{deliveries:?}");
+    assert!(deliveries[0].starts_with("m4 -> "), "{deliveries:?}");
+    assert_eq!(
+        h.store
+            .attempt_holder(TEAM, assigned)
+            .unwrap()
+            .unwrap()
+            .member,
+        "m4"
+    );
+    h.store = crate::teams::store::Store::open(h.temp.path()).unwrap();
+    pass(&mut h, &mut ports, FAILURE + 9_000);
+    assert_eq!(
+        ports.deliveries, deliveries,
+        "a restart repeated the hand-out"
+    );
+    let effects = h.store.effects(TEAM, 200, None).unwrap().rows;
+    let mut delivered = effects.iter().filter(|effect| effect.node == assigned);
+    assert_eq!(delivered.next().unwrap().state, "submitted");
+    assert!(delivered.next().is_none());
+    assert_eq!(
+        effects
+            .iter()
+            .find(|effect| effect.request_id == other_effect)
+            .unwrap()
+            .state,
+        "submitted"
+    );
+    let rows = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    assert_eq!(
+        rows.iter()
+            .filter(|item| item.kind.starts_with("lead_member_added:"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|item| item.seq == release.seq)
+            .unwrap()
+            .state,
+        "closed"
+    );
+    assert!(h.store.cards(TEAM, 200, None).unwrap().rows.is_empty());
+    // A separate end of the replacement reopens the parent's report.
+    // That ordinary retirement grants no provider-stop reassignment.
+    h.observe(assigned, TaskStage::InProgress);
+    h.cancel_fact(assigned);
+    let inbox = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    let reopened = inbox.iter().find(|item| item.seq == release.seq).unwrap();
+    assert_eq!(reopened.state, "open");
+    assert!(reopened.notes.is_empty());
+    for node in [21, assigned] {
+        refused(
+            h.run(
+                &lead,
+                Operation::Reassign {
+                    node,
+                    member: "m3".into(),
+                    reason: "Attempting to reassign a stage with no current provider stop.".into(),
+                },
+            ),
+            "invalid_state",
+        );
+    }
+}
+
 fn pass(h: &mut Harness, ports: &mut Production, now: i64) {
     // Opening the adapter on every call includes the first pass after a
     // service restart. The actual roster/effect scan and store writer run.
@@ -448,7 +640,16 @@ fn stage(agent: &str) -> (Harness, Production, Value, String) {
 }
 
 fn save_session(member: &Member) -> Value {
-    let name = format!("{}/fixture/{}", member.agent, member.id);
+    save_session_as(
+        member,
+        &format!("{}/fixture/{}", member.agent, member.id),
+        &uuid::Uuid::new_v4().to_string(),
+        &uuid::Uuid::new_v4().to_string(),
+        &format!("conversation-{}", member.id),
+    )
+}
+
+fn save_session_as(member: &Member, name: &str, sid: &str, run: &str, conversation: &str) -> Value {
     let launch = member
         .session
         .as_ref()
@@ -456,20 +657,18 @@ fn save_session(member: &Member) -> Value {
         .session_id
         .strip_prefix("launch_id:")
         .unwrap();
-    let sid = uuid::Uuid::new_v4().to_string();
-    let run = uuid::Uuid::new_v4().to_string();
     let mut record = producer::launched_record(
         &member.agent,
-        &name,
+        name,
         launch,
-        &sid,
-        &run,
+        sid,
+        run,
         &member.worktree,
         &member.account,
     );
-    producer::confirmed(&mut record, &format!("conversation-{}", member.id));
+    producer::confirmed(&mut record, conversation);
     producer::save(&mut record).unwrap();
-    producer::launch_started(launch, &name, &sid).unwrap();
+    producer::launch_started(launch, name, sid).unwrap();
     record
 }
 

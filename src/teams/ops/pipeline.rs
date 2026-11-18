@@ -14,7 +14,7 @@ pub(super) use overrides::{
     released_stage, task_ended,
 };
 use stages::want_stage;
-pub(super) use stages::{current_stage, end_stage, retire_stage};
+pub(super) use stages::{current_stage, end_stage, reassign_stopped_stage, retire_stage};
 
 fn spec<'a>(ctx: &'a Context<'_>, n: &Node) -> Result<&'a Pipeline> {
     ctx.team
@@ -230,7 +230,15 @@ fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str, note: Option<ReportNo
         }
         body.truncate(end);
     }
-    ctx.reply.item = Some(ctx.inbox_notes(n.id, "report", &body, &notes)?);
+    // Reassigning a retired stage keeps the parent's report generation.
+    // Return the current report to the inbox if the replacement ends early.
+    ctx.reply.item = Some(ctx.db.query_row(
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,notes,created_ms) VALUES(?1,'report',?2,?3,?4,?5,?6,?7)
+         ON CONFLICT(team,kind,node,generation) DO UPDATE SET actor=excluded.actor,text=excluded.text,notes=excluded.notes,state='open',reply=NULL,reply_actor=NULL,created_ms=excluded.created_ms
+         RETURNING seq",
+        params![ctx.team.id, n.id, ctx.generation(n.id)?, encode(ctx.actor)?, body, encode(&notes)?, ctx.now],
+        |row| row.get(0),
+    ).map_err(storage)?);
     Ok(())
 }
 /// A report as a delimited quote: the member's text is unchanged inside its

@@ -368,6 +368,16 @@ pub enum Operation {
         #[serde(default)]
         account: zerus_team_plan::catalog::AccountChoice,
     },
+    LeadAddMember {
+        role: String,
+        agent: String,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        effort: String,
+        #[serde(default)]
+        account: zerus_team_plan::catalog::AccountChoice,
+    },
     SwapMember {
         member: String,
         agent: String,

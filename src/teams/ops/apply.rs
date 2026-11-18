@@ -455,7 +455,7 @@ fn dispatch(ctx: &mut Context<'_>, config: Option<&crate::config::Config>) -> Re
         Operation::ReconcilePhase { .. } => publication::reconcile(ctx),
         Operation::AcceptPhase { .. } => publication::accept(ctx),
         Operation::SubmitDraftPhase { .. } | Operation::EditDraftPhase { .. } => drafts::write(ctx),
-        Operation::AddMember { .. } => editing::add_member(ctx),
+        Operation::AddMember { .. } | Operation::LeadAddMember { .. } => editing::add_member(ctx),
         Operation::SwapMember { .. } => editing::swap_member(ctx),
         Operation::RenameTeam { .. } => editing::rename(ctx),
         Operation::SetGoal { .. } => editing::goal(ctx),
