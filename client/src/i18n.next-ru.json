@@ -679,6 +679,7 @@
   "Drafts create no tasks until the phase is approved.": "До утверждения фазы черновик не создаёт задач.",
   "Drag to reorder, or use Alt+Up / Alt+Down.": "Перетащите, чтобы изменить порядок, или используйте Alt+Up/Alt+Down.",
   "Drive folders stay uninitialized without a real reverse peer. Project history and session membership still copy.": "Папки Drive остаются неинициализированными без настоящего обратного подключения. История проектов и принадлежность сессий всё равно копируются.",
+  "Drop a Backlog or To do task here to send it to this team.": "Перетащите сюда задачу из бэклога или списка «К выполнению», чтобы передать её этой команде.",
   "Drop onto a session in the list to assign it; onto the project header for Any session.": "Перетащите на сессию в списке, чтобы назначить её; на заголовок проекта — для «Любой сессии».",
   "Each computer keeps its own permission mode. Changing it on one computer leaves the others as they are.": "У каждого компьютера свой режим разрешений. Изменение на одном компьютере не затрагивает остальные.",
   "Each delay must be at least the one before.": "Каждая задержка должна быть не меньше предыдущей.",
