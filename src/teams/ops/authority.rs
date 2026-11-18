@@ -63,6 +63,7 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::RecordCancel { .. }
         | Operation::ReconcileLeadQueue
         | Operation::ReconcileUnstaffed
+        | Operation::RecordMemberReadability { .. }
         | Operation::EndStaleUnstaffed
         | Operation::SettleLeftHandout { .. }
         | Operation::UnbindMember { .. }

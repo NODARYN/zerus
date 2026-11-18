@@ -22,6 +22,7 @@ pub(crate) mod planning;
 pub(crate) mod publication;
 pub(crate) mod rework;
 pub(crate) use holder::{hand_back_return, holder_of, return_without_holder, NOT_RECEIVED};
+pub(crate) mod member_readability;
 mod member_sessions;
 mod native_floor;
 mod native_person;
@@ -574,13 +575,14 @@ fn parameters_present(db: &Connection) -> Result<bool> {
 }
 
 /// The common batches: only `CREATE ... IF NOT EXISTS` statements.
-const COMMON_SCHEMA: [&str; 6] = [
+const COMMON_SCHEMA: [&str; 7] = [
     include_str!("pipeline-schema.sql"),
     include_str!("observation-schema.sql"),
     include_str!("validation-settings.sql"),
     include_str!("read-indexes.sql"),
     include_str!("base-schema.sql"),
     include_str!("non-delivery-schema.sql"),
+    include_str!("member-readability.sql"),
 ];
 /// The closed-key sweep's finished marker (zerus-63rru.32 round 2). Applied
 /// once per store, when the table is absent, so the ordinary open performs

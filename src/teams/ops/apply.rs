@@ -437,6 +437,7 @@ fn dispatch(ctx: &mut Context<'_>, config: Option<&crate::config::Config>) -> Re
         Operation::RecordCancel { .. } => timers::record_cancel(ctx),
         Operation::ReconcileLeadQueue => lead_queue::reconcile(ctx),
         Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
+        Operation::RecordMemberReadability { .. } => unstaffed::record_readability(ctx),
         Operation::EndStaleUnstaffed => unstaffed::end_stale(ctx),
         Operation::SettleLeftHandout { .. } => members::settle_left(ctx),
         Operation::UnbindMember { .. } => members::unbind(ctx),

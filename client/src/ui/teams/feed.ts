@@ -19,5 +19,14 @@ export function inboxKind(kind: string): string {
   }
 }
 
+export function inboxText(row: DrawerRow): string {
+  if (!row.kind.startsWith("unstaffed:") || row.text_truncated) return row.text;
+  // Retain the stored English sentence for older CLI readers. Translate
+  // only the service's exact notice, with IDs kept as data.
+  const notice = /^Task ([1-9][0-9]*) is ready\. The service cannot read any eligible member \(([a-zA-Z0-9_-]+(?:, [a-zA-Z0-9_-]+)*)\)\. It will check again\.$/.exec(row.text);
+  if (!notice || notice[1] !== String(row.node)) return row.text;
+  return tr("Task %1 is ready. The service cannot read any eligible member (%2). It will check again.", notice[1], notice[2]);
+}
+
 export const reportRows = (rows: readonly DrawerRow[]) => rows.filter((row) => row.kind === "report");
 export const historyLine = (row: DrawerRow) => row.text || row.kind;

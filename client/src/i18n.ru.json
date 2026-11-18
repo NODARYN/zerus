@@ -3636,6 +3636,7 @@
   "Task #%1 is not available in this phase": "Задача №%1 недоступна в этой фазе",
   "Task #%1 is not on the board's pages that were read.": "Задачи #%1 нет на прочитанных страницах доски.",
   "Task %1": "Задача %1",
+  "Task %1 is ready. The service cannot read any eligible member (%2). It will check again.": "Задача %1 готова к выдаче. Службе недоступны данные всех подходящих участников (%2). Служба повторит проверку.",
   "Task %1 was not found in this project.": "Задача %1 не найдена в этом проекте.",
   "Task (Send now)": "Задача («Отправить сейчас»)",
   "Task / generation / member": "Задача / поколение / участник",

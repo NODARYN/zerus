@@ -293,6 +293,13 @@ shows the task's role, pipeline, member, round and stages; a stage card says
 which task it checks ("checks the work of %1"), and a card that waits for a
 decision says "Decision needed".
 
+When every eligible member for a ready task stays unreadable for three
+minutes, the lead's inbox names those members. Zerus keeps checking and closes
+the item after a member is readable for three minutes, or when the task stops
+waiting. A brief change in readability keeps the current item. An unreadable
+reviewer or tester leaves its stage in the pipeline. The person's existing
+unreadable-member card still provides the specific reason and retry action.
+
 A card's decisions are **Admit** for a task that waits for admission,
 **Accept** and **Return** for reported work, **Hold** or **Release**, and
 **Cancel task**. Return and Cancel task ask for a reason. Reassign and Route

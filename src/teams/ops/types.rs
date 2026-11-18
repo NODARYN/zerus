@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use zerus_team_plan::{catalog::TemplateBundle, model::*};
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberReading {
+    pub member: MemberId,
+    pub session: SessionKey,
+    pub unreadable: bool,
+}
+
 /// Construct only after the caller's native authority has been verified.
 /// This type deliberately cannot be deserialized from an operation request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -615,10 +623,14 @@ pub enum Operation {
     /// The service saw the kernel's unstaffed nodes differ from the lead's
     /// open items. The store recomputes the set itself, from its own view, and
     /// tells the lead of each new node once and closes the items of the nodes
-    /// that left it; an unstaffed stage is retired and its parent handed to the
-    /// lead, as at the stage's creation. A call that finds nothing to change is
-    /// refused with `unstaffed_unchanged`.
+    /// that left it. A stage with a permanent staffing gap is retired as at
+    /// creation. A call that finds nothing to change is refused with
+    /// `unstaffed_unchanged`.
     ReconcileUnstaffed,
+    /// Record fresh availability readings for exact active member bindings.
+    RecordMemberReadability {
+        readings: Vec<MemberReading>,
+    },
     /// Recompute the two aggregate waiting-queue inbox episodes. Service only.
     ReconcileLeadQueue,
     /// The service saw unended unstaffed items older than their node's

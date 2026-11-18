@@ -92,6 +92,7 @@ impl Runtime {
         team: &Team,
         m: &Member,
         now: i64,
+        readings: &mut Vec<ops::MemberReading>,
     ) -> Result<Option<Availability>> {
         let key = format!("member_free:{}", m.id);
         if !self.due(store, team, &key, "", now)? {
@@ -100,12 +101,49 @@ impl Runtime {
         match ports.availability(team, m) {
             Ok(answer) => {
                 self.recovered(store, team, &key, now)?;
+                if let Some(session) = &m.session {
+                    readings.push(ops::MemberReading {
+                        member: m.id.clone(),
+                        session: session.clone(),
+                        unreadable: matches!(&answer, Availability::Unreadable(fact)
+                            if !matches!(fact, Fact::FirstMessage | Fact::TerminalWaiting { .. })),
+                    });
+                }
                 Ok(Some(answer))
             }
             Err(e) => {
                 self.failure(store, team, &key, "", &e, now)?;
                 Ok(None)
             }
+        }
+    }
+    fn record_readability(
+        &self,
+        store: &mut Store,
+        team: &Team,
+        mut readings: Vec<ops::MemberReading>,
+        now: i64,
+    ) -> Result<()> {
+        if readings.is_empty() {
+            return Ok(());
+        }
+        let previous = store.member_readability(&team.id)?;
+        readings.retain(|reading| {
+            let state = previous.get(&reading.member).copied().unwrap_or_default();
+            state.observe(reading.unreadable, now) != state
+        });
+        if readings.is_empty() {
+            return Ok(());
+        }
+        match write(
+            store,
+            &team.id,
+            Operation::RecordMemberReadability { readings },
+            now,
+        ) {
+            Ok(_) => Ok(()),
+            Err(error) if error.code == code::STALE_REVISION => Ok(()),
+            Err(error) => Err(error),
         }
     }
     fn cooled_readiness(
@@ -174,11 +212,7 @@ impl Runtime {
         } else {
             Vec::new()
         };
-        // The unstaffed comparison (and its stale-episode page) runs on every
-        // pass of a running team, a pass with no ready task included: it ends
-        // the episodes of nodes that left the set.
-        self.unstaffed(store, team, &raw, &all_members, &effects, now)?;
-        let mut r = self.cooled_readiness(store, team, raw, now)?;
+        let mut r = self.cooled_readiness(store, team, raw.clone(), now)?;
         let initial = PlanView {
             phases: &r.phases,
             nodes: &r.nodes,
@@ -206,7 +240,8 @@ impl Runtime {
         }
         let mut members = Vec::new();
         let mut needs = Needs::default();
-        for m in all_members {
+        let mut readings = Vec::new();
+        for m in &all_members {
             let held = effects.iter().find(|e| e.member == m.id);
             // The member is in the active set: a later leave tells the lead
             // again (zerus-63rru.86).
@@ -221,7 +256,7 @@ impl Runtime {
                 // An occupied seat remains unavailable for new work. Only
                 // an undecidable binding or first-message readiness needs
                 // this card: decisive ends use delivery recovery (.85).
-                self.member_free(store, ports, team, &m, now)?
+                self.member_free(store, ports, team, m, now, &mut readings)?
             } else if ready_work
                 && m.id != team.lead
                 && m.state == MemberState::Active
@@ -229,26 +264,26 @@ impl Runtime {
                 && !self.ledger.pending_member(&team.id, &m.id)?
                 && held.is_none()
             {
-                match self.terminal_state(ports, team, &m, now)? {
+                match self.terminal_state(ports, team, m, now)? {
                     // Its terminal holds input (zerus-63rru.79): not free, and
                     // needed like a member that cannot be read.
                     TerminalState::Standing { dialog } => {
-                        Some(Availability::Unreadable(Fact::TerminalWaiting {
-                            dialog,
-                        }))
+                        Some(Availability::Unreadable(Fact::TerminalWaiting { dialog }))
                     }
                     // Tried again: a card for it stays as it is this pass.
                     TerminalState::Lapsed => {
                         needs.unread.insert(m.id.clone());
-                        self.member_free(store, ports, team, &m, now)?
+                        self.member_free(store, ports, team, m, now, &mut readings)?
                     }
-                    TerminalState::None => self.member_free(store, ports, team, &m, now)?,
+                    TerminalState::None => {
+                        self.member_free(store, ports, team, m, now, &mut readings)?
+                    }
                 }
             } else {
                 // A member out of the active set that holds started work is
                 // told to the lead once (zerus-63rru.86).
                 if ready_work && (m.state != MemberState::Active || m.session.is_none()) {
-                    self.tell_paused_started(store, team, &m, now)?;
+                    self.tell_paused_started(store, team, m, now)?;
                 }
                 Some(Availability::Busy)
             };
@@ -276,12 +311,16 @@ impl Runtime {
                 Some(_) => {}
             }
             members.push(MemberView {
-                id: m.id,
-                role: m.role,
+                id: m.id.clone(),
+                role: m.role.clone(),
                 state: m.state,
                 free: held.is_none() && answer == Some(Availability::Free),
             });
         }
+        let observed_at = ports.clock_ms(now);
+        self.record_readability(store, team, readings, observed_at)?;
+        // Even a pass without ready work ends episodes that left the set.
+        self.unstaffed(store, team, &raw, &all_members, &effects, observed_at)?;
         let view = PlanView {
             phases: &r.phases,
             nodes: &r.nodes,
@@ -434,13 +473,20 @@ impl Runtime {
         }
         let open: BTreeSet<u32> = effects.iter().map(|e| e.node).collect();
         #[allow(unused_mut)]
-        let mut set = ops::unstaffed_of(team, raw, members, &open);
+        let mut set = ops::unstaffed_of(
+            team,
+            raw,
+            members,
+            &open,
+            &store.unreadable_members(&team.id)?,
+        );
         #[cfg(test)]
         STALE_VIEW.with(|stale| {
             if let Some(node) = stale.get() {
                 set.push(zerus_team_plan::ready::Unstaffed {
                     node,
                     reason: "A stale view.".into(),
+                    unreadable: false,
                 });
             }
         });

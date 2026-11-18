@@ -100,10 +100,57 @@ fn kernel_set(h: &Harness) -> Vec<u32> {
     let team = h.store.team(TEAM).unwrap().unwrap();
     let r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
     let members = h.store.members(TEAM, 200, None).unwrap().rows;
-    crate::teams::ops::unstaffed::unstaffed_of(&team, &r, &members, &BTreeSet::new())
-        .into_iter()
-        .map(|u| u.node)
-        .collect()
+    crate::teams::ops::unstaffed::unstaffed_of(
+        &team,
+        &r,
+        &members,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    )
+    .into_iter()
+    .map(|u| u.node)
+    .collect()
+}
+
+#[test]
+fn an_unreadable_reviewer_is_told_to_the_lead_without_retiring_the_stage() {
+    let (mut h, parent, _) = wanted();
+    let stage = created_stage(&mut h, parent);
+    let session = h
+        .store
+        .member(TEAM, "m3")
+        .unwrap()
+        .unwrap()
+        .session
+        .unwrap();
+    for now in [100, 180_100] {
+        let revision = h.store.team(TEAM).unwrap().unwrap().revision;
+        let command = request(
+            revision,
+            Operation::RecordMemberReadability {
+                readings: vec![MemberReading {
+                    member: "m3".into(),
+                    session: session.clone(),
+                    unreadable: true,
+                }],
+            },
+        );
+        apply_fixture(&mut h.store, &service(), &command, now).unwrap();
+    }
+    reconcile(&mut h).unwrap();
+    let page = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    assert!(page.iter().any(|item| item.node == stage
+        && item.kind.starts_with("unstaffed:")
+        && item.text.contains("eligible member (m3)")
+        && item.state == "open"));
+    assert_eq!(stages(&h, parent)[0].id, stage);
+    assert_eq!(run_state(&h, parent), "active");
+    assert_eq!(pending_cancels(&h, stage), 0);
+    let effect = h.intent(stage, "m3");
+    assert_eq!(
+        h.store.open_effects(TEAM, 200, None).unwrap().rows[0].request_id,
+        effect
+    );
 }
 
 /// The stage's reviewer is removed after its creation: the reconcile

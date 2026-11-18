@@ -5,13 +5,13 @@ import { tr } from "../../i18n";
 import { TextInput } from "../lib/TextField";
 import type { DrawerRow } from "../../store/teamDrawers";
 import { waitingNote } from "./decisions";
-import { reportRows } from "./feed";
+import { inboxText, reportRows } from "./feed";
 
 export type DrawerAction = (kind: string, fields: Record<string, unknown>) => void;
 
 export function InboxText(props: { row: DrawerRow }) {
   return <>
-    <pre class="team-drawer-text">{props.row.text}</pre>
+    <pre class="team-drawer-text">{inboxText(props.row)}</pre>
     <Show when={props.row.text_truncated}><p class="dim">{tr("Only the beginning of this text is shown.")}</p></Show>
     <Show when={props.row.notes.length}><p class="dim">{tr("Service notes")}</p>
       <For each={props.row.notes}>{(note) => <p class="dim">{waitingNote(note)}</p>}</For>
