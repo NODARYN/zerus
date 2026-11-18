@@ -25,6 +25,14 @@
 //! row is out of view (zerus-33caz). Such a composer settles only when its
 //! shown rows, the rows the bar counts and the cursor are exactly Claude's
 //! own layout of this paste at the pane's width.
+//!
+//! The rows out of view above that bar cannot be read, so text typed before
+//! the paste must not be there: the send gate reads the composer empty under
+//! the state lock, and a person can still type into the terminal after it.
+//! The composer is therefore read empty once more right before the paste
+//! (zerus-7cq23); only keys that reach Claude after that read, or that it has
+//! read but not yet drawn, remain unseen. A composer with any row out of view
+//! below, or whose closing rule is not on the screen, never settles.
 use super::*;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -93,8 +101,9 @@ fn more_bar(plain: &str) -> Option<(bool, usize)> {
 
 /// What one frame shows of Claude's composer.
 enum View {
-    /// From its `❯` prompt row; `below` rows are out of view under it.
-    Whole { text: String, below: usize },
+    /// From its `❯` prompt row; `below` rows are out of view under it, and
+    /// None when no closing rule or bar shows whether any are (zerus-7cq23).
+    Whole { text: String, below: Option<usize> },
     /// A composer taller than its view, under its `↑ N more` bar.
     Scrolled(Scrolled),
 }
@@ -119,9 +128,9 @@ impl Scrolled {
     /// that text at this width, `above` of them out of view and every other
     /// one shown, nothing out of view below, and the cursor right after its
     /// last character. Rows out of view cannot be read: text typed into the
-    /// composer before the paste is excluded by the empty composer the send
-    /// gate saw under the state lock, as for a composer in full view, and by
-    /// this count wherever it adds a row; text typed later shows at the cursor.
+    /// composer before the paste is excluded by the empty composer read right
+    /// before the paste (`empty`), as for a composer in full view, and by this
+    /// count wherever it adds a row; text typed later shows at the cursor.
     fn holds(&self, pasted: &str, cursor_x: usize, cursor_y: usize) -> bool {
         if self.below != 0 || self.rows.is_empty() || self.width != self.closing || self.width <= GUTTER * 2 {
             return false;
@@ -165,10 +174,14 @@ fn claude_view(rows: &[String], cursor_y: usize) -> Option<View> {
     let closes = |index: &usize| separator(&rows[*index]) || more_bar(&rows[*index]).is_some();
     let below = |index: usize| rows.get(index).and_then(|row| more_bar(row)).filter(|(above, _)| !above).map_or(0, |(_, count)| count);
     let Some(above) = above else {
-        // Claude's rule below the composer, or a blank row in simpler layouts.
-        let end = (start + 1..rows.len())
-            .find(|index| closes(index) || rows[*index].trim().is_empty())
-            .unwrap_or(rows.len());
+        // Claude's rule or `↓` bar closes its composer: every row up to it is
+        // the composer's, blank ones (its empty lines) included (zerus-7cq23).
+        // A layout without either ends at its first blank row, and the screen
+        // then shows nothing of the rows below.
+        let closing = (start + 1..rows.len()).find(closes);
+        let end = closing.unwrap_or_else(|| {
+            (start + 1..rows.len()).find(|index| rows[*index].trim().is_empty()).unwrap_or(rows.len())
+        });
         let text = rows[start..end]
             .iter()
             .enumerate()
@@ -178,7 +191,12 @@ fn claude_view(rows: &[String], cursor_y: usize) -> Option<View> {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        return Some(View::Whole { text: text.trim().to_owned(), below: below(end) });
+        // An `↑` bar under the prompt row is no layout of Claude's composer.
+        let below = closing.and_then(|end| match more_bar(&rows[end]) {
+            Some((true, _)) => None,
+            _ => Some(below(end)),
+        });
+        return Some(View::Whole { text: text.trim().to_owned(), below });
     };
     // Every row up to Claude's closing rule or bar is a composer row.
     let end = (start + 1..rows.len()).find(closes)?;
@@ -299,8 +317,8 @@ fn composer_full(agent: &str, screen: &str, cursor_y: usize) -> Option<String> {
     let rows: Vec<String> = screen.lines().map(plain).collect();
     let text = match agent {
         "claude" => match claude_view(&rows, cursor_y)? {
-            View::Whole { text, below: 0 } => text,
-            View::Whole { text, below } => format!("{text}\n↓ {below} more"),
+            View::Whole { text, below: Some(0) | None } => text,
+            View::Whole { text, below: Some(below) } => format!("{text}\n↓ {below} more"),
             View::Scrolled(view) => {
                 let below = if view.below > 0 { format!("\n↓ {} more", view.below) } else { String::new() };
                 format!("↑ {} more\n{}{below}", view.above, view.rows.join("\n"))
@@ -338,6 +356,26 @@ pub(in crate::state) fn residue(terminal: &dyn backend::TerminalBackend, claim: 
     composer_text(claim.agent, &screen, y).filter(|text| !text.is_empty())
 }
 
+/// How long the read right before the paste waits for a frame that holds still.
+const BEFORE_PASTE: Duration = Duration::from_millis(250);
+
+/// Whether Claude's composer is an empty prompt now: the read immediately
+/// before the paste (zerus-7cq23). A frame whose cursor moved while it was
+/// read is read again until `BEFORE_PASTE` passes; anything else that is not
+/// an empty prompt, a draft or an unreadable terminal, is not empty.
+pub(in crate::state) fn empty(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) -> bool {
+    let deadline = Instant::now() + BEFORE_PASTE;
+    loop {
+        if let Some((screen, x, y)) = frame(terminal, claim) {
+            return composer_empty_for_model(claim.agent, &screen, x, y, None);
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// One frame of the composer: its text when it shows a settled paste
 /// (recognized, not empty, no `Pasting…`), and its text at all. None when
 /// the cursor moved during the read. A composer taller than its view settles
@@ -350,7 +388,7 @@ fn settled(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim,
     let rows: Vec<String> = screen.lines().map(plain).collect();
     let holds = match (claim.agent == "claude").then(|| claude_view(&rows, y)).flatten() {
         Some(View::Scrolled(view)) => view.holds(pasted, x, y),
-        Some(View::Whole { below, .. }) => below == 0 && !composer_empty_for_model(claim.agent, &screen, x, y, None),
+        Some(View::Whole { below, .. }) => below == Some(0) && !composer_empty_for_model(claim.agent, &screen, x, y, None),
         None => !composer_empty_for_model(claim.agent, &screen, x, y, None),
     };
     let shown = text.clone().filter(|_| !pasting(&screen) && holds);
@@ -909,6 +947,120 @@ mod tests {
         let processing = SCROLLED.replace("⏵⏵ bypass permissions on", "Pasting…");
         assert!(pasting(&processing));
         assert!(settle_tall(&frames(&processing, 18, 21), TALL).is_err());
+    }
+
+    // zerus-7cq23: Claude Code 2.1.327 screens from the private real TUI at
+    // 80x24, pasted as hgs pastes. This message's middle line is empty, which
+    // Claude shows as a blank row inside its composer. With the cursor moved
+    // up until the prompt row is in view, the rows after it are out of view
+    // under `─── ↓ 1 more ───`; the cursor is above or below the blank row.
+    const BLANK: &str = include_str!("../../../tests/fixtures/claude-composer-blank-message.txt");
+    const BLANK_HIDDEN_BELOW: &str = include_str!("../../../tests/fixtures/claude-composer-blank-hidden-below-2.1.327.txt");
+    const BLANK_HIDDEN_BELOW_UNDER: &str = include_str!("../../../tests/fixtures/claude-composer-blank-hidden-below-under-2.1.327.txt");
+    /// The first of those after the pane shrank to 11 rows: the composer's
+    /// later rows, its rule and the footer are below the screen's last row.
+    const BLANK_CUT: &str = include_str!("../../../tests/fixtures/claude-composer-blank-cut-2.1.327.txt");
+    /// A short message with an empty middle line, whole in its composer.
+    const BLANK_SHORT: &str = include_str!("../../../tests/fixtures/claude-composer-blank-short-2.1.327.txt");
+    /// This message pasted in front of a person's draft row (`\nEXTRA`, the
+    /// cursor at its start), then the cursor walked up three rows:
+    /// `─── ↑ 3 more ───`, this message's last seven rows, and the draft row
+    /// out of view under `─── ↓ 1 more ───`.
+    const SCROLLED_BOTH_DRAFT: &str = include_str!("../../../tests/fixtures/claude-composer-scrolled-both-2.1.327.txt");
+
+    #[test]
+    fn a_composer_in_full_view_settles_with_every_row_up_to_its_rule() {
+        let frames = Frames::new(vec![(BLANK_SHORT.to_owned(), 34, 21)]);
+        let message = "Short first line of the fixture.\n\nShort third line of the fixture.";
+        assert_eq!(settle_tall(&frames, message).as_deref(), Ok(message));
+        assert!(still_tall(&frames, message, message));
+        // The row after the blank one is part of the Enter fence.
+        let changed = BLANK_SHORT.replace("Short third line", "Short other line");
+        assert!(!still_tall(&Frames::new(vec![(changed, 34, 21)]), message, message));
+    }
+
+    #[test]
+    fn a_composer_in_full_view_with_rows_out_of_view_never_settles() {
+        let settled: Vec<&str> = [
+            ("cursor above the blank row", BLANK_HIDDEN_BELOW, 25, 16),
+            ("cursor below the blank row", BLANK_HIDDEN_BELOW_UNDER, 71, 18),
+            ("cut off by the pane", BLANK_CUT, 25, 9),
+        ]
+        .into_iter()
+        .filter(|(_, screen, x, y)| settle_tall(&Frames::new(vec![(screen.to_string(), *x, *y)]), BLANK).is_ok())
+        .map(|(name, ..)| name)
+        .collect();
+        assert!(settled.is_empty(), "settled with rows out of view: {settled:?}");
+        // Hand-edited: an `↑` bar where Claude draws its `↓` one is no layout
+        // of its composer, and never settles either.
+        let upward = BLANK_HIDDEN_BELOW.replacen("↓ 1 more", "↑ 1 more", 1);
+        assert_ne!(upward, BLANK_HIDDEN_BELOW);
+        assert!(settle_tall(&Frames::new(vec![(upward, 25, 16)]), BLANK).is_err());
+        // The evidence reads past the blank row and counts the hidden rows.
+        let text = composer_text("claude", BLANK_HIDDEN_BELOW, 16).unwrap();
+        assert!(text.starts_with("Paragraph one of the fixture draft"), "{text:?}");
+        assert!(text.contains("here.\n\nParagraph three"), "{text:?}");
+        assert!(text.ends_with("so that the wrapped\n↓ 1 more"), "{text:?}");
+    }
+
+    #[test]
+    fn a_scrolled_composer_with_rows_out_of_view_below_never_settles() {
+        let frames = |x: usize, y: usize| Frames::new(vec![(SCROLLED_BOTH_DRAFT.to_owned(), x, y)]);
+        // Where Claude left its cursor: the middle row of the view.
+        assert!(settle_tall(&frames(18, 18), TALL).is_err());
+        // Hand-set cursor (Claude 2.1.327 keeps it on the middle row of a
+        // view with rows below, so it never drew this): right after this
+        // paste's last character on the last shown row. Everything else then
+        // matches this paste: the bar's three rows and the seven shown are its
+        // ten, and the shown ones are its last seven. Only the draft row out
+        // of view below refuses it.
+        assert!(settle_tall(&frames(18, 21), TALL).is_err());
+        let rows: Vec<&str> = SCROLLED_BOTH_DRAFT.lines().collect();
+        let bar = rows.iter().position(|row| more_bar(&plain(row)) == Some((false, 1))).unwrap();
+        let rule = "─".repeat(80);
+        let mut closed = rows.clone();
+        closed[bar] = &rule;
+        let closed = closed.join("\n");
+        assert_eq!(settle_tall(&Frames::new(vec![(closed, 18, 21)]), TALL).map(|_| ()), Ok(()), "control: the same rows over Claude's rule");
+        assert!(composer_text("claude", SCROLLED_BOTH_DRAFT, 21).unwrap().ends_with("</zerus-message>\n↓ 1 more"));
+    }
+
+    /// zerus-7cq23: Claude Code 2.1.327 idle at 80x24, its prompt empty and
+    /// with `x` typed into it.
+    const EMPTY: &str = include_str!("../../../tests/fixtures/claude-composer-empty-2.1.327.txt");
+    const DRAFT: &str = include_str!("../../../tests/fixtures/claude-composer-draft-2.1.327.txt");
+
+    /// A terminal whose cursor moves on every read.
+    struct Moving(std::sync::atomic::AtomicUsize);
+    impl backend::TerminalBackend for Moving {
+        fn input_state(&self, _claim: &backend::InputClaim) -> Result<backend::InputState> {
+            let x = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(backend::InputState { cursor_x: x.to_string(), cursor_y: "21".into() })
+        }
+        fn capture(&self, _pane: &str, _mode: backend::Capture) -> Result<Vec<u8>> {
+            Ok(EMPTY.as_bytes().to_vec())
+        }
+    }
+
+    #[test]
+    fn the_composer_is_read_empty_right_before_the_paste_only_on_an_empty_prompt() {
+        let one = |screen: &str, x: usize, y: usize| Frames::new(vec![(screen.to_owned(), x, y)]);
+        assert!(empty(&one(EMPTY, 2, 21), &claim()));
+        // A person's draft, and a composer holding a message out of view.
+        assert!(!empty(&one(DRAFT, 3, 21), &claim()));
+        assert!(!empty(&one(SCROLLED, 18, 21), &claim()));
+        // A frame whose cursor moved while it was read is read again, and
+        // the frame that holds still decides.
+        let frames = |first: (&str, usize), then: (&str, usize)| {
+            Frames::new(vec![(first.0.to_owned(), first.1, 21), (then.0.to_owned(), then.1, 21)])
+        };
+        assert!(empty(&frames((DRAFT, 3), (EMPTY, 2)), &claim()));
+        assert!(!empty(&frames((EMPTY, 2), (DRAFT, 3)), &claim()));
+        // One that never holds still is not empty, after a bounded wait.
+        let start = Instant::now();
+        assert!(!empty(&Moving(0.into()), &claim()));
+        assert!(start.elapsed() >= BEFORE_PASTE, "{:?}", start.elapsed());
+        assert!(start.elapsed() < BEFORE_PASTE * 4, "{:?}", start.elapsed());
     }
 
     #[test]

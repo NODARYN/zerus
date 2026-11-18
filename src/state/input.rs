@@ -2247,6 +2247,15 @@ fn submit_core(
             receipt_index::persist(&receipt_path, &receipt)?;
             return Ok(());
         }
+        // zerus-7cq23: a person can type into the terminal after the gate read
+        // the composer empty, and Claude keeps such text out of view above a
+        // paste taller than its view. Read it empty again right before the
+        // paste. The receipt is published, so this send is then uncertain,
+        // with nothing pasted and the person's text left as it is.
+        if native && !settle::empty(terminal, &claim) {
+            residue = settle::residue(terminal, &claim);
+            return Err("Claude's composer was not empty right before the paste; nothing was pasted".into());
+        }
         pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;
         deadline = std::time::Instant::now() + settle::WINDOW;
