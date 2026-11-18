@@ -39,6 +39,9 @@ mod unix {
     impl ProviderWriter {
         pub(crate) fn take(state: &Path) -> Option<Self> {
             let deadline = Instant::now() + Duration::from_millis(25);
+            // Match the configured-root resolution in the record reader.
+            // Descendants, including the lock itself, remain no-follow.
+            let state = crate::platform::canonical(state).ok()?;
             let lock = storage::existing_lock_until(&state.join(".lock"), deadline).ok()??;
             Some(Self { _lock: lock })
         }

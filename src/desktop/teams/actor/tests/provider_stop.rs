@@ -2,6 +2,7 @@ use super::real_rows::{self, Production};
 use crate::state::listing_fixture as producer;
 use crate::teams::ops::{tests::*, HandoutOutcome, Operation, StageTaskOutcome, TaskStage};
 use serde_json::{json, Value};
+use std::os::unix::fs::{symlink, PermissionsExt};
 use zerus_team_plan::model::{Member, NodeKind, NodeState};
 
 const CHILD: &str = "desktop::teams::actor::tests::provider_stop::quota_fixture";
@@ -29,6 +30,10 @@ fn quota_fixture() {
             }
         };
         let (mut h, mut ports, record, other_effect) = stage(agent);
+        let alias = tempfile::tempdir().unwrap();
+        let parent = alias.path().join("state-parent");
+        symlink(h.temp.path().parent().unwrap(), &parent).unwrap();
+        ports.native.config.state = parent.join(h.temp.path().file_name().unwrap());
         let before = h.store.inbox(TEAM, 200, None).unwrap().rows.len();
         let failed = hook(&record, "StopFailure", body, FAILURE);
         assert_eq!(failed["phase"], "error");
@@ -349,6 +354,8 @@ fn pass(h: &mut Harness, ports: &mut Production, now: i64) {
 
 fn stage(agent: &str) -> (Harness, Production, Value, String) {
     let mut h = Harness::empty();
+    // The pinned native reader expects the product's private state root.
+    std::fs::set_permissions(h.temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut create = create();
     if let Operation::Create { bundle, .. } = &mut create {
         bundle
