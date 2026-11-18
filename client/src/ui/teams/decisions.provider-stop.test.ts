@@ -12,7 +12,7 @@ it("localizes the provider stop for stage 21 without displaying the English fall
     code: "provider_stop_quota",
     parameters: ["m3", "Kimi", "20", "21"],
     text: "English fallback",
-  })).toBe("На этапе №21 задачи №20 участник m3 (Kimi) достиг лимита использования. Проверка возвращена руководителю. Просмотрите изменения или выберите следующее действие.");
+  })).toBe("На этапе №21 задачи №20 участник m3 (Kimi) достиг лимита использования. Ревью возвращено лиду. Просмотрите изменения или выберите следующее действие.");
 });
 
 it("localizes a lead's informational staffing item", () => {
@@ -20,12 +20,12 @@ it("localizes a lead's informational staffing item", () => {
     code: "lead_member_added",
     parameters: ["m4", "Codex", "reviewer"],
     text: "English fallback",
-  })).toBe("Руководитель добавил участника m4 (Codex) для работы в роли reviewer.");
+  })).toBe("Лид добавил участника m4 (Codex) в роль reviewer.");
 });
 
 it("names the stop and task for a standalone hand-back", () => {
   expect(waitingNote({
     code: "provider_stop_authentication",
     parameters: ["m2", "Claude", "19"],
-  })).toBe("При работе над задачей №19 участник m2 (Claude) не смог войти в аккаунт провайдера. Задача возвращена руководителю.");
+  })).toBe("При работе над задачей №19 участник m2 (Claude) не смог войти в аккаунт провайдера. Задача возвращена лиду.");
 });
