@@ -183,7 +183,7 @@ pub(super) fn removed(db: Catalog, path: &Path) {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod teams;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) use teams::{find_run, member_archive_pending};
+pub(crate) use teams::{find_run, member_archive_pending, with_member_archive_probe};
 
 fn current_proof(db: &Catalog) -> Result<()> {
     if refresh::directory()? != db.directory {

@@ -195,27 +195,26 @@ fn request_worker(team: bool) {
         };
         let path = root().join(AUX).join(leaf);
         let current = now();
-        if let Some(raw) = labels::read_file(&path, 4096).map_err(fail)? {
-            let at = serde_json::from_slice::<Value>(&raw)
-                .ok()
-                .and_then(|row| row["at"].as_f64());
-            if team {
-                // Check and reserve under the shared state launch lock. A
-                // failed spawn still spends the attempt; a failed reservation
-                // never starts a worker. A backward clock shift cannot retry.
-                if current - at.ok_or(INCOMPLETE)? < interval {
-                    return Ok(());
-                }
-            } else if at.is_some_and(|at| (0.0..interval).contains(&(current - at))) {
-                return Ok(());
-            }
+        let raw = match labels::read_file(&path, 4096) {
+            Ok(raw) => raw,
+            // Recover an oversized regular reservation without reading it.
+            Err(_) if team && fs::symlink_metadata(&path)
+                .is_ok_and(|meta| meta.is_file() && meta.len() > 4096) => None,
+            Err(error) => return Err(fail(error)),
+        };
+        let at = raw.as_deref()
+            .and_then(|raw| serde_json::from_slice::<Value>(raw).ok())
+            .and_then(|row| row["at"].as_f64());
+        // A malformed or future-dated reservation admits one replacement
+        // under both locks. Reserve it before spawning, including on failure.
+        if at.is_some_and(|at| (0.0..interval).contains(&(current - at))) {
+            return Ok(());
         }
         atomic(&path, &json!({"at":current}).to_string())?;
         // The child acquires the same worker exclusion as the ordinary
         // catalog refresh. Release the probe before it can try to acquire it.
         drop(probe);
-        #[cfg(not(test))]
-        spawn_worker(team)?;
+        launch_worker(team)?;
         Ok(())
     })();
     if team {
@@ -226,7 +225,29 @@ fn request_worker(team: bool) {
 }
 
 #[cfg(not(test))]
-fn spawn_worker(team: bool) -> Result<()> {
+fn launch_worker(team: bool) -> Result<()> {
+    let mut args = vec!["__state", "archive-catalog-worker"];
+    if team {
+        args.push("--teams-repair");
+    }
+    spawn_worker(&args)
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+thread_local! {
+    pub(super) static TEST_WORKER: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+fn launch_worker(_team: bool) -> Result<()> {
+    if let Some(test) = TEST_WORKER.with(std::cell::Cell::get) {
+        spawn_worker(&["--exact", test, "--ignored", "--test-threads=1"])?;
+    }
+    Ok(())
+}
+
+#[cfg(any(not(test), target_os = "linux", target_os = "macos"))]
+fn spawn_worker(args: &[&str]) -> Result<()> {
     use std::process::{Command, Stdio};
     let mut command = Command::new(std::env::current_exe().map_err(fail)?);
     for (key, _) in
@@ -234,10 +255,7 @@ fn spawn_worker(team: bool) -> Result<()> {
     {
         command.env_remove(key);
     }
-    command.args(["__state", "archive-catalog-worker"]);
-    if team {
-        command.arg("--teams-repair");
-    }
+    command.args(args);
     command
         .env(
             "HGS_STATE_DIR",

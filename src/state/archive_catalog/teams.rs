@@ -1,6 +1,10 @@
 //! Exact exit lookup and advisory archive evidence for the two Teams readers.
 use super::*;
-use std::time::{Duration, Instant};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 fn check_root(state: &Path) -> Result<()> {
     if crate::platform::canonical(state).map_err(|e| e.to_string())?
@@ -63,30 +67,105 @@ pub(crate) fn member_archive_pending(state: &Path, session: &str, launch: &str) 
     if !canonical_id(session) || !canonical_id(launch) {
         return Err(INCOMPLETE.into());
     }
-    if refresh::catalog_without_request().is_ok() {
-        return Ok(false);
-    }
-    refresh::request_for_team();
-    native_archive_pending(session, launch)
+    PROBE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(batch) = slot.as_mut() {
+            batch
+                .get_or_insert_with(read_pending_archives)
+                .as_ref()
+                .map_err(String::clone)?
+                .contains(session, launch)
+        } else {
+            read_pending_archives()?.contains(session, launch)
+        }
+    })
 }
 
-fn native_archive_pending(session: &str, launch: &str) -> Result<bool> {
+type Batch = Option<Result<PendingArchives>>;
+thread_local! {
+    static PROBE: RefCell<Option<Batch>> = const { RefCell::new(None) };
+}
+
+/// One cold catalog read and disk walk for an entire service actor pass.
+/// A changed directory invalidates the result until the next pass.
+pub(crate) fn with_member_archive_probe<T>(pass: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Batch>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PROBE.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+    let _restore = Restore(PROBE.with(|slot| slot.replace(Some(None))));
+    pass()
+}
+
+#[derive(Default)]
+struct PendingArchives {
+    directory: Option<String>,
+    complete: bool,
+    found: BTreeMap<(String, String), (PathBuf, String)>,
+}
+impl PendingArchives {
+    fn contains(&self, session: &str, launch: &str) -> Result<bool> {
+        if self
+            .directory
+            .as_ref()
+            .is_some_and(|stamp| refresh::directory().as_ref() != Ok(stamp))
+        {
+            return Err(INCOMPLETE.into());
+        }
+        if let Some((path, stamp)) = self.found.get(&(session.to_owned(), launch.to_owned())) {
+            return if archive_references::current_stamp(path).as_ref() == Ok(stamp) {
+                Ok(true)
+            } else {
+                Err(INCOMPLETE.into())
+            };
+        }
+        if self.complete {
+            Ok(false)
+        } else {
+            Err(INCOMPLETE.into())
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PROBE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn read_pending_archives() -> Result<PendingArchives> {
+    #[cfg(test)]
+    PROBE_READS.with(|count| count.set(count.get() + 1));
+    let directory = refresh::directory()?;
+    if refresh::catalog_without_request().is_ok() {
+        return Ok(PendingArchives {
+            directory: Some(directory),
+            complete: true,
+            ..Default::default()
+        });
+    }
+    refresh::request_for_team();
     const ENTRIES: usize = 64;
     const BYTES: u64 = 4 << 20;
     let until = Instant::now() + Duration::from_millis(25);
-    let directory = refresh::directory()?;
+    let mut pending = PendingArchives {
+        directory: Some(directory.clone()),
+        complete: true,
+        ..Default::default()
+    };
     if directory == "absent" {
-        return Ok(false);
+        return Ok(pending);
     }
     let db = refresh::existing().ok();
     let mut remaining = BYTES;
-    let mut complete = true;
     for (examined, entry) in fs::read_dir(root().join("archives"))
         .map_err(|e| e.to_string())?
         .enumerate()
     {
         if examined == ENTRIES || Instant::now() >= until || remaining == 0 {
-            return Err(INCOMPLETE.into());
+            pending.complete = false;
+            break;
         }
         let path = entry.map_err(|e| e.to_string())?.path();
         let Some(id) = path
@@ -97,7 +176,7 @@ fn native_archive_pending(session: &str, launch: &str) -> Result<bool> {
             continue;
         };
         let Ok(stamp) = archive_references::current_stamp(&path) else {
-            complete = false;
+            pending.complete = false;
             continue;
         };
         if db
@@ -108,35 +187,37 @@ fn native_archive_pending(session: &str, launch: &str) -> Result<bool> {
         }
         let size = archive_references::stamped_bytes(&stamp)?;
         if size > remaining {
-            complete = false;
+            pending.complete = false;
             continue;
         }
         remaining -= size;
         let Some(raw) = labels::read_file(&path, size).ok().flatten() else {
-            complete = false;
+            pending.complete = false;
             continue;
         };
         let Ok(record) = serde_json::from_slice::<Value>(&raw) else {
-            complete = false;
+            pending.complete = false;
             continue;
         };
         if archive::validate_record(string(&record, "name"), id, &record).is_err()
             || archive_references::current_stamp(&path).as_ref() != Ok(&stamp)
         {
-            complete = false;
+            pending.complete = false;
             continue;
         }
-        if record["session_id"] == session
-            && record["launch_id"] == launch
-            && record["state"] == "archived"
-            && refresh::directory()? == directory
-        {
-            return Ok(true);
+        let session = string(&record, "session_id");
+        let launch = string(&record, "launch_id");
+        if record["state"] == "archived" && canonical_id(session) && canonical_id(launch) {
+            pending
+                .found
+                .insert((session.into(), launch.into()), (path, stamp));
         }
     }
-    if complete && refresh::directory()? == directory {
-        Ok(false)
-    } else {
-        Err(INCOMPLETE.into())
+    if refresh::directory()? != directory {
+        return Err(INCOMPLETE.into());
     }
+    Ok(pending)
 }
+
+#[cfg(test)]
+mod tests;
