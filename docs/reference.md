@@ -8784,6 +8784,12 @@ ordinary/mobile listing, or 16 for explicit pages. Both retain the shared 16-MiB
 canonical byte budget, independent 16-MiB/256-entry indirect observation budget,
 and original response deadline. First-page deferred live ownership still needs
 its original fresh canonical proof and shares the unchanged 16-file page budget.
+A native child's reply is bounded in characters and can exceed the compact
+projection's 16-KiB per-field byte limit. In that case only the internal child
+detail hint is absent, and the row requires the original canonical overlay.
+The saved reply and reply/attention identities stay intact; public rows and
+selected inspection keep their existing roster preview and status semantics.
+This does not enlarge the seed, overlay or response budgets.
 A file ceiling is not a promise that arbitrarily large or slow records fit these
 unchanged byte/time limits. A limit or late freshness failure refuses the whole
 body; no row is silently degraded or omitted. Unknown native state
