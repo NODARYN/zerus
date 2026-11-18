@@ -385,6 +385,39 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_member_without_any_exit_archive_stays_unknown() {
+        isolated("desktop::teams::confirm::native::observation::tests::saved_without_archive_child");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn saved_without_archive_child() {
+        let (config, mut store, stop) = store_env();
+        let (b, _, record) = real_codex(|record| {
+            record["pid"] = json!(i32::MAX);
+            record["process_start"] = json!("1");
+        });
+        for key in ["runtime_state", "process_state", "tracked", "completion_source", "exited_at"] {
+            assert!(record.get(key).is_none(), "{key}");
+        }
+        assert_eq!(crate::state::dispatch_test_archive_catalog_worker().unwrap(), 0);
+        let name = record["name"].as_str().unwrap();
+        let native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
+        crate::desktop::teams::child::FIXTURE_RUN.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(|_, args, _| {
+                assert_eq!(args[2..5], ["inspect", "--session-id", args[4].as_str()]);
+                crate::desktop::teams::child::Ended::Exited { code: 1, output: Vec::new() }
+            }));
+        });
+        let error = observed(name, native.current(&b, name)).unwrap_err();
+        assert_eq!(
+            error,
+            format!("Whether member session {name} ended is unknown (No exact unique exit archive); nothing was resumed")
+        );
+        assert!(!config.state.join("archive-catalog-v2/teams-attempt.json").exists());
+    }
+
+    #[test]
     fn an_unreadable_question_index_is_unknown_never_an_exit() {
         isolated("desktop::teams::confirm::native::observation::tests::index_fixture");
     }
@@ -454,8 +487,8 @@ mod tests {
     fn repair_exit_catalog_child() {
         let (config, _, _) = store_env();
         let (b, _, record) = real_codex(|_| ());
-        let id = crate::state::archive_for_test(&record).unwrap();
-        std::fs::remove_file(config.state.join("archive-catalog-v1.sqlite3")).unwrap();
+        let id = crate::state::listing_fixture::archive_with_catalog_gap(&record).unwrap();
+        assert!(config.state.join("archive-catalog-v1.sqlite3").is_file());
         let roots = Roots::open(&config.state, "question_receipts").unwrap();
         let name = record["name"].as_str().unwrap();
         assert_eq!(

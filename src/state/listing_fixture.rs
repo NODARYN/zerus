@@ -192,6 +192,23 @@ pub(crate) fn archive(record: &Value) -> Result<String> {
     archive::save(record)
 }
 
+/// Let native save publish the archive while its incremental catalog
+/// transaction rolls back, leaving the existing SQLite cache in place.
+pub(crate) fn archive_with_catalog_gap(record: &Value) -> Result<String> {
+    if archive_catalog::worker()? != 0 {
+        return Err("The fixture could not initialize the archive catalog".into());
+    }
+    let db = rusqlite::Connection::open(root().join("archive-catalog-v1.sqlite3"))
+        .map_err(|e| e.to_string())?;
+    db.execute_batch(
+        "CREATE TRIGGER fixture_catalog_rollback BEFORE INSERT ON archive_rows
+         BEGIN SELECT RAISE(ABORT, 'fixture catalog publication rollback'); END;",
+    ).map_err(|e| e.to_string())?;
+    let result = archive(record);
+    db.execute_batch("DROP TRIGGER fixture_catalog_rollback;").map_err(|e| e.to_string())?;
+    result
+}
+
 /// The launch's evidence as a detached tracked launch writes it, which first
 /// prunes evidence older than a week.
 pub(crate) fn launch_started(launch: &str, name: &str, session: &str) -> Result<()> {

@@ -47,11 +47,29 @@ impl Runtime {
         now: i64,
     ) -> Result<()> {
         let (key, decision, generation) = hold;
+        self.hold_scoped(store, team, (key, decision, generation, None), (reason, now), || {})
+    }
+
+    pub(super) fn hold_scoped(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        hold: (&str, u64, u32, Option<&str>),
+        observed: (&str, i64),
+        changed: impl FnOnce(),
+    ) -> Result<()> {
+        let (key, decision, generation, binding) = hold;
+        let (reason, now) = observed;
         let name = format!("gate:{key}");
         let mut row = self.ledger.get(&team.id, &name)?;
         if row
             .as_ref()
-            .is_some_and(|r| held_by(r) != Some((decision, generation)))
+            .is_some_and(|r| {
+                held_by(r).is_none_or(|(d, g, b)| {
+                    (d, g) != (decision, generation)
+                        || binding.is_some_and(|binding| b.as_deref() != Some(binding))
+                })
+            })
         {
             // Another decision or generation: the earlier hold has ended.
             self.recover_gate(store, team, key, now)?;
@@ -66,8 +84,9 @@ impl Runtime {
             .transpose()
             .map_err(crate::teams::store::storage)?
             .unwrap_or_default();
-        g.revision = serde_json::to_string(&(decision, generation, None::<String>))
+        g.revision = serde_json::to_string(&(decision, generation, binding))
             .map_err(crate::teams::store::storage)?;
+        let new_reason = g.hold.as_ref().is_none_or(|h| h.reason != reason);
         let h = g.hold.get_or_insert_with(|| Hold {
             start: now,
             reason: reason.into(),
@@ -96,6 +115,9 @@ impl Runtime {
                 None => return Ok(()),
             },
         };
+        if new_reason {
+            changed();
+        }
         // A pending opener first replays its own receipt; the second
         // iteration can then replace a card whose reason has moved on.
         for _ in 0..2 {
@@ -112,7 +134,7 @@ impl Runtime {
                     .transpose()?
                     .flatten()
                     .is_some_and(|c| c.state == "open");
-                let close = if key.starts_with("unreadable:") {
+                let close = if unreadable::key_is_unreadable(key) {
                     "What cannot be read about this member changed; its new card states it."
                 } else {
                     "The reason this task waits changed; its new card states it."
@@ -141,11 +163,8 @@ impl Runtime {
 }
 /// The decision and generation a held row stands for, also in the rows of
 /// earlier builds, whose stamp carried the reason as well.
-fn held_by(row: &Row) -> Option<(u64, u32)> {
-    let revision = row.data.get("revision")?.as_str()?;
-    let (decision, generation, _): (u64, u32, Option<String>) =
-        serde_json::from_str(revision).ok()?;
-    Some((decision, generation))
+fn held_by(row: &Row) -> Option<(u64, u32, Option<String>)> {
+    serde_json::from_str(row.data.get("revision")?.as_str()?).ok()
 }
 impl Runtime {
     pub(in crate::desktop::teams::actor) fn held_retired(

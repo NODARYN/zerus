@@ -235,12 +235,19 @@ fn archive_catalog_card_child() {
     for id in ["m1", "m2"] {
         assert!(free(&mut w, id));
     }
-    let id = producer::archive(&w.records["m1"]).unwrap();
     let forgotten = producer::archive(&w.records["m2"]).unwrap();
+    let id = producer::archive_with_catalog_gap(&w.records["m1"]).unwrap();
     let state = w.h.temp.path().to_owned();
     let db = state.join("archive-catalog-v1.sqlite3");
     std::fs::remove_file(state.join(format!("archives/{forgotten}.json"))).unwrap();
-    std::fs::remove_file(&db).unwrap();
+    let indexed = || {
+        rusqlite::Connection::open(&db).unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM archive_identities WHERE id=?)",
+            [&id],
+            |row| row.get::<_, bool>(0),
+        ).unwrap()
+    };
+    assert!(!indexed(), "the native writer rolled back its catalog update");
     let admitted = state.join("archive-catalog-v2/teams-attempt.json");
     let t = team(&w);
     let (m1, m2) = (member(&w, "m1"), member(&w, "m2"));
@@ -300,7 +307,7 @@ fn archive_catalog_card_child() {
         .find(|card| {
             card.state == "open"
                 && card.text.starts_with("Member m1 ")
-                && card.text.contains("missing from the archive catalog")
+                && card.text.contains("an archive from its session is missing from the archive catalog")
         })
         .expect("the durable archive has a catalog card after three minutes");
     assert!(cards(&w.h).iter().all(|row| !row.text.starts_with("Member m2 ")
@@ -320,7 +327,7 @@ fn archive_catalog_card_child() {
         error.starts_with(crate::state::archive_catalog::INCOMPLETE),
         "{error}"
     );
-    assert!(!db.exists(), "the worker must wait for the state writer");
+    assert!(!indexed(), "the worker must wait for the state writer");
     drop(writer);
     let status = crate::state::dispatch_test_archive_catalog_worker().unwrap();
     assert_eq!(status, 0);

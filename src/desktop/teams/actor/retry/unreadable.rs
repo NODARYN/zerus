@@ -10,7 +10,40 @@ use crate::desktop::teams::actor::ports::Fact;
 use crate::desktop::teams::actor::schedule::Needs;
 
 const ROWS: &str = "gate:unreadable:";
-const ARCHIVE: &str = "its archive is missing from the archive catalog";
+const ARCHIVE: &str = "an archive from its session is missing from the archive catalog";
+
+const CONFIRMATION: &str = "unreadable_confirmation:";
+
+pub(super) fn key_is_unreadable(key: &str) -> bool {
+    key.starts_with("unreadable:") || key.starts_with(CONFIRMATION)
+}
+
+impl Runtime {
+    /// Standing confirmation needs no ready task to explain an unreadable end.
+    /// Reuse the existing delay, opener receipt, Retry and recovery path.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(in crate::desktop::teams) fn confirmation_observation(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &Member,
+        fault: Option<(&str, &str)>,
+        now: i64,
+        report: impl FnOnce(&str),
+    ) -> Result<()> {
+        let key = format!("{CONFIRMATION}{}", member.id);
+        let Some((binding, error)) = fault else {
+            return self.recovered(store, team, &key, now);
+        };
+        let reason = format!(
+            "Member {} ({}) needs attention. {}. The service will check again.",
+            member.id, member.role, crate::desktop::teams::reason_text(error).trim_end_matches('.')
+        );
+        self.for_row(|a| {
+            a.hold_scoped(store, team, (&key, 0, 0, Some(binding)), (&reason, now), || report(error))
+        })
+    }
+}
 
 impl Runtime {
     /// A reservation can discover the first-send gate after selection. Keep
