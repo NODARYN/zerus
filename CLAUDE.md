@@ -192,6 +192,8 @@ or peer idleness. Preserve exact waiter identity, native work/attention priority
 bounded previews and paged journals. Check the selected installed CLI's help
 marker before using `wait` on an older peer. See `docs/agent-coordination.md`.
 
+Retire idle sub-sessions you started and the owner does not use when their result is accepted or they have been idle 24 hours, provided they have no planned task. See `hgs guide stop`.
+
 Use non-interactive filesystem commands and `ssh/scp -o BatchMode=yes` in automation.
 On Windows, reach `ssh.exe` only through `hgs.exe`: Windows OpenSSH hangs after
 using a synchronous pipe, so scripts and tests must not pipe it directly.
