@@ -12,6 +12,7 @@ export function feedClock(atMs: number): string {
 export function inboxKind(kind: string): string {
   switch (kind.split(":")[0]) {
     case "report": return tr("Report");
+    case "provider_stop": return tr("Provider stop");
     case "question": return tr("Question");
     case "permission": return tr("Permission");
     case "planning_goal": return tr("Planning goal");
