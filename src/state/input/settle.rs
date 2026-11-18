@@ -369,14 +369,19 @@ pub(in crate::state) const SHORT: &str =
     "Claude's pane is too short to show its whole composer; nothing was sent; make the pane taller and send again";
 
 /// Whether the pane's bottom edge cuts off Claude's composer around
-/// `cursor_y`: no closing rule or bar under its prompt row on the screen.
-/// Claude Code 2.1.327 draws its prompt row on the last row of a pane seven
-/// rows tall or shorter (eight still shows the rule). Rows of the composer
-/// under the prompt row are then out of view, so a paste there never settles
-/// (zerus-oz7cz).
+/// `cursor_y`: no closing rule or bar under its prompt row on the screen, and
+/// no blank row from the cursor's row down to the screen's last row, so the
+/// composer runs into the pane's edge. Claude Code 2.1.327 draws its prompt
+/// row on the last row of a pane seven rows tall or shorter (eight still shows
+/// the rule). Rows of the composer under the prompt row are then out of view,
+/// so a paste there never settles (zerus-oz7cz). A prompt with blank rows
+/// under it and no rule is no such edge: it is not refused as too short, and
+/// still never settles (zerus-7cq23).
 pub(in crate::state) fn cut(agent: &str, screen: &str, cursor_y: usize) -> bool {
     let rows: Vec<String> = screen.lines().map(plain).collect();
-    agent == "claude" && matches!(claude_view(&rows, cursor_y), Some(View::Whole { below: None, .. }))
+    agent == "claude"
+        && matches!(claude_view(&rows, cursor_y), Some(View::Whole { below: None, .. }))
+        && rows.iter().skip(cursor_y + 1).all(|row| !row.trim().is_empty())
 }
 
 /// How long the wait before the paste, unlocked, gives a frame to hold still.
@@ -1200,6 +1205,16 @@ mod tests {
         // So does a full pane, and the check is Claude's alone.
         assert!(!cut("claude", EMPTY, 21));
         assert!(!cut("codex", EMPTY_7, 6));
+        // Hand-made, as the fake agent of tests/test_input.py draws Claude: a
+        // prompt with blank rows under it and no rule is no pane's edge. It is
+        // not refused as too short; a paste there still never settles.
+        let bare = format!("❯ {}", "\n".repeat(23));
+        assert!(!cut("claude", &bare, 0));
+        assert!(terminal_gate_on(&record, true, true, &one(&bare, 2, 0)).is_ok());
+        assert_eq!(before(&one(&bare, 2, 0)), None);
+        // The same prompt on the screen's last row is the pane's edge.
+        let edge = format!("{}❯ ", "\n".repeat(23));
+        assert!(cut("claude", &edge, 23));
     }
 
     #[test]
