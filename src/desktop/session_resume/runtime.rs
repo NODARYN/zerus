@@ -1291,7 +1291,7 @@ fn observe(
             if consent.cancel.load(Ordering::Acquire) || !image.current() {
                 return Err(std::io::ErrorKind::PermissionDenied.into());
             }
-            image.inherit(command)
+            crate::desktop::original_child::inherit_pinned(image, command)
         });
     }
     let _ = (args, input, until, consent);
@@ -1396,7 +1396,7 @@ fn original(
                 if !current() || !image.current() {
                     return Err(std::io::ErrorKind::PermissionDenied.into());
                 }
-                image.inherit(command)
+                crate::desktop::original_child::inherit_pinned(&image, command)
             },
         );
     }
