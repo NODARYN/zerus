@@ -3,6 +3,9 @@ mod held;
 mod unreadable;
 use super::*;
 use serde::{Deserialize, Serialize};
+
+const RECOVERED_REASON: &str = "The service check recovered";
+
 #[derive(Default, Serialize, Deserialize)]
 pub(super) struct Gate {
     revision: String,
@@ -47,7 +50,7 @@ impl Runtime {
         key: &str,
         now: i64,
     ) -> Result<()> {
-        self.for_row(|a| a.recover_gate(store, team, key, now))
+        self.for_row(|a| a.close_gate(store, team, key, RECOVERED_REASON, now))
     }
 
     pub(super) fn force_failure(
@@ -110,7 +113,7 @@ impl Runtime {
             let deferrals = a
                 .load::<Gate>(&team.id, &format!("gate:{key}"))?
                 .map_or(1, |g| g.deferrals.saturating_add(1));
-            a.recover_gate(store, team, key, now)?;
+            a.close_gate(store, team, key, RECOVERED_REASON, now)?;
             a.put(
                 &team.id,
                 &format!("gate:{key}"),
@@ -217,7 +220,14 @@ impl Runtime {
         }
         Ok(())
     }
-    fn recover_gate(&mut self, store: &mut Store, team: &Team, key: &str, now: i64) -> Result<()> {
+    fn close_gate(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        key: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<()> {
         let name = format!("gate:{key}");
         if let Some(mut row) = self.ledger.get(&team.id, &name)? {
             let mut g: Gate =
@@ -240,7 +250,7 @@ impl Runtime {
                         &team.id,
                         Operation::CloseCard {
                             card,
-                            reason: "The service check recovered".into(),
+                            reason: reason.into(),
                         },
                         now,
                     )?;

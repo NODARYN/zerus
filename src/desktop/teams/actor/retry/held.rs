@@ -71,8 +71,12 @@ impl Runtime {
                 })
             })
         {
-            // Another decision or generation: the earlier hold has ended.
-            self.recover_gate(store, team, key, now)?;
+            let close_reason = if binding.is_some() {
+                "The member's session binding changed"
+            } else {
+                RECOVERED_REASON
+            };
+            self.close_gate(store, team, key, close_reason, now)?;
             row = self.ledger.get(&team.id, &name)?;
             if row.is_some() {
                 return Ok(());

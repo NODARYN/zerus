@@ -224,13 +224,18 @@ fn request_worker(team: bool) {
     }
 }
 
-#[cfg(not(test))]
-fn launch_worker(team: bool) -> Result<()> {
+#[cfg(any(not(test), target_os = "linux", target_os = "macos"))]
+fn worker_args(team: bool) -> Vec<&'static str> {
     let mut args = vec!["__state", "archive-catalog-worker"];
     if team {
         args.push("--teams-repair");
     }
-    spawn_worker(&args)
+    args
+}
+
+#[cfg(not(test))]
+fn launch_worker(team: bool) -> Result<()> {
+    spawn_worker(&worker_args(team))
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -239,15 +244,15 @@ thread_local! {
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-fn launch_worker(_team: bool) -> Result<()> {
+fn launch_worker(team: bool) -> Result<()> {
     if let Some(test) = TEST_WORKER.with(std::cell::Cell::get) {
-        spawn_worker(&["--exact", test, "--ignored", "--test-threads=1"])?;
+        spawn_worker(&worker_args(team), test)?;
     }
     Ok(())
 }
 
 #[cfg(any(not(test), target_os = "linux", target_os = "macos"))]
-fn spawn_worker(args: &[&str]) -> Result<()> {
+fn spawn_worker(args: &[&str], #[cfg(test)] test: &str) -> Result<()> {
     use std::process::{Command, Stdio};
     let mut command = Command::new(std::env::current_exe().map_err(fail)?);
     for (key, _) in
@@ -255,6 +260,11 @@ fn spawn_worker(args: &[&str]) -> Result<()> {
     {
         command.env_remove(key);
     }
+    #[cfg(test)]
+    command
+        .args(["--exact", test, "--ignored", "--test-threads=1"])
+        .env("TEST_ARCHIVE_WORKER_ARGV", json!(args).to_string());
+    #[cfg(not(test))]
     command.args(args);
     command
         .env(

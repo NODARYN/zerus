@@ -1,4 +1,4 @@
-use super::*;
+use super::{super::test_inspect, *};
 use crate::{
     state::listing_fixture as producer,
     teams::ops::{
@@ -6,12 +6,72 @@ use crate::{
         Operation,
     },
 };
-use serde_json::json;
-
 const FIXTURE: &str = "desktop::teams::confirm::scan::tests::unknown_fixture";
 
 #[test]
+fn a_changed_unreadable_binding_closes_the_old_card_and_starts_a_new_hold() {
+    let mut h = crate::desktop::teams::tests::bound151_fixture();
+    let state = h.temp.path();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let member = h.store.member(TEAM, "m1").unwrap().unwrap();
+    let (binding, _, _) = crate::desktop::teams::confirm::policy::tests::sample();
+    let mut changed = binding.clone();
+    changed.run = "a-different-run".into();
+    let mut cards = actor::Runtime::open(state, &team.home).unwrap();
+    let mut observe = |store: &mut Store, binding: &Binding, now| {
+        apply_observation(
+            &mut cards,
+            store,
+            (&team, &member, binding),
+            &Err("The member inspection is unavailable".into()),
+            now,
+            |_| {},
+        )
+        .unwrap();
+    };
+    let open = |store: &Store| {
+        store
+            .cards(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .filter(|card| card.kind == "team_actor_blocked" && card.state == "open")
+            .map(|card| card.seq)
+            .collect::<Vec<_>>()
+    };
+    let start = 1_000_000;
+    observe(&mut h.store, &binding, start);
+    observe(&mut h.store, &binding, start + 180_000);
+    let first = open(&h.store);
+    assert_eq!(first.len(), 1);
+    let rebound = start + 181_000;
+    observe(&mut h.store, &changed, rebound);
+    assert!(open(&h.store).is_empty());
+    let journal = h.store.journal(TEAM, 200, None).unwrap().rows;
+    let note = journal
+        .iter()
+        .find(|row| row.kind == "close_card" && row.refs.contains(&format!("card:{}", first[0])))
+        .unwrap();
+    assert_eq!(note.text, "The member's session binding changed");
+    observe(&mut h.store, &changed, rebound + 179_999);
+    assert!(open(&h.store).is_empty());
+    observe(&mut h.store, &changed, rebound + 180_000);
+    let next = open(&h.store);
+    assert_eq!(next.len(), 1);
+    assert_ne!(next[0], first[0]);
+}
+
+#[test]
 fn a_persistently_unknown_end_gets_one_card_and_one_fault_log() {
+    scan_fixture(false);
+}
+
+#[test]
+fn a_readable_observation_closes_the_card_for_an_active_member() {
+    scan_fixture(true);
+}
+
+fn scan_fixture(recover: bool) {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -20,6 +80,7 @@ fn a_persistently_unknown_end_gets_one_card_and_one_fault_log() {
             "--test-threads=1",
             "--nocapture",
         ])
+        .env("TEST_TEAMS_RECOVER", if recover { "yes" } else { "no" })
         .output()
         .unwrap();
     assert!(
@@ -49,32 +110,16 @@ fn unknown_fixture() {
         tab_colors: String::new(),
     };
     let (binding, name) = super::super::native::launch_binding(&config, TEAM, "m1").unwrap();
-    let mut record = producer::launched_record(
-        &binding.agent,
-        &name,
-        &binding.launch,
-        &binding.session,
-        &binding.run,
-        &binding.folder,
-        &binding.account,
-    );
-    record["worktree_owner"] = json!({"id":binding.nonce});
-    record["pid"] = json!(i32::MAX);
-    record["process_start"] = json!("1");
-    producer::save(&mut record).unwrap();
+    // This roster uses a fixed machine identity. Give its private CLI
+    // config that identity so inspection runs with the original guard.
+    crate::swarm::save_test_node_id(&config, &binding.machine).unwrap();
+    test_inspect::save_then_exit(&config, &binding, &name);
     assert_eq!(
         crate::state::dispatch_test_archive_catalog_worker().unwrap(),
         0
     );
-    crate::desktop::teams::child::FIXTURE_RUN.with(|slot| {
-        *slot.borrow_mut() = Some(Box::new(|_, args, _| {
-            assert_eq!(args[2], "inspect");
-            crate::desktop::teams::child::Ended::Exited {
-                code: 1,
-                output: Vec::new(),
-            }
-        }));
-    });
+    producer::withhold_saved_record(&name, true).unwrap();
+    test_inspect::use_cli_inspection();
     let machine = binding.machine;
     let stop = Arc::new(AtomicBool::new(false));
     let mut cards = actor::Runtime::open(&state, &machine).unwrap();
@@ -127,6 +172,28 @@ fn unknown_fixture() {
         !state.join("approval-audit").exists(),
         "unknown did not reserve an original"
     );
+    if std::env::var("TEST_TEAMS_RECOVER").unwrap() == "yes" {
+        producer::withhold_saved_record(&name, false).unwrap();
+        pass(&mut h.store, &mut cards, &mut cursor, start + 189_000);
+        pass(&mut h.store, &mut cards, &mut cursor, start + 193_500);
+        assert_eq!(
+            h.store.member(TEAM, "m1").unwrap().unwrap().state,
+            MemberState::Active
+        );
+        assert_eq!(
+            h.store.card(TEAM, first[0].seq).unwrap().unwrap().state,
+            "closed"
+        );
+        let ledger = actor::Ledger::open(&state).unwrap();
+        assert!(ledger
+            .get(TEAM, "gate:unreadable_confirmation:m1")
+            .unwrap()
+            .is_none());
+        assert!(!state.join("approval-audit").exists());
+        assert_eq!(logs.len(), 1, "{logs:?}");
+        return;
+    }
+
     let mut unrelated = producer::launched_record(
         "codex",
         "codex/example/unrelated",
@@ -167,4 +234,5 @@ fn unknown_fixture() {
     assert_eq!(logs.len(), 2, "{logs:?}");
     assert!(logs[0].contains("No exact unique exit archive"));
     assert!(logs[1].contains("Archive catalog coverage is incomplete"));
+    producer::withhold_saved_record(&name, false).unwrap();
 }

@@ -131,7 +131,7 @@ fn recovery_close_then_restart_before_gate_removal_is_not_a_dismissal_for_either
         let mut f = fixture(held);
         fail(&mut f, 100);
         let old = open(&f).remove(0).seq;
-        // This is exactly recover_gate's durable cut: CloseCard committed,
+        // This is exactly close_gate's durable cut: CloseCard committed,
         // while the old gate still names that card and its opener receipt.
         f.h.run(
             &service(),
