@@ -159,7 +159,10 @@ fn unknown_fixture() {
         },
     )
     .unwrap();
+    // The bounded roster cursor can spend a pass reaching the end of the
+    // team page before it starts a fresh sweep.
     pass(&mut h.store, &mut cards, &mut cursor, start + 373_500);
+    pass(&mut h.store, &mut cards, &mut cursor, start + 378_000);
     assert!(existing(&h.store).iter().all(|card| card.state == "closed"));
     assert_eq!(logs.len(), 2, "{logs:?}");
     assert!(logs[0].contains("No exact unique exit archive"));
