@@ -169,18 +169,30 @@ pub(crate) struct PanePath {
     pub path: String,
 }
 
-/// What one bounded observation proves of a terminal (zerus-5sl7r). Only the
-/// terminal's own exact answer says it is absent or its command ended; a
-/// failed, refused or late observation is [`Self::Unknown`], never absence.
+/// What one bounded observation proves of the terminal a launch created
+/// ([`Launched`], zerus-5sl7r). Only an answer of the server that created it,
+/// about that pane, says the pane is gone or its command ended; a failed,
+/// refused or late observation, or an answer of another server, is
+/// [`Self::Unknown`], never absence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalState {
     /// It exists and its command still runs.
     Alive,
     /// It exists and its command ended (a dead pane kept).
     DeadPane,
-    /// The terminal says no such session exists, or no server runs.
+    /// The server that created the pane runs and has no such pane.
     Absent,
     Unknown,
+}
+
+/// The terminal a launch created, as its server answered the launch: the
+/// server's identity (tmux: its pid and start time; the session host: its
+/// pid and creation time) and the pane's (`%N`, which a server never reuses
+/// while it runs). Observations are bound to both (zerus-5sl7r).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Launched {
+    pub(crate) server: String,
+    pub(crate) pane: String,
 }
 
 /// One fact about a pane, as the terminal reports it.
@@ -381,9 +393,10 @@ pub(crate) trait TerminalBackend: Sync {
     fn session_exists(&self, _name: &str) -> bool {
         false
     }
-    /// What an observation of terminal `name` within `wait` proves
-    /// ([`TerminalState`]); a backend without exact answers knows nothing.
-    fn terminal_state(&self, _name: &str, _wait: std::time::Duration) -> TerminalState {
+    /// What an observation of the terminal `launched` names within `wait`
+    /// proves ([`TerminalState`]); a backend without exact answers knows
+    /// nothing.
+    fn terminal_state(&self, _launched: &Launched, _wait: std::time::Duration) -> TerminalState {
         TerminalState::Unknown
     }
     /// The current name of session `$N`, None when it no longer exists.
@@ -401,6 +414,12 @@ pub(crate) trait TerminalBackend: Sync {
     /// Start a detached session.
     fn start(&self, _spec: &LaunchSpec) -> Result<()> {
         Err(UNSUPPORTED.into())
+    }
+    /// [`Self::start`], with the terminal it created as its server answered
+    /// the launch; None when the answer names none, which leaves every later
+    /// observation of it unknown.
+    fn start_observed(&self, spec: &LaunchSpec) -> Result<Option<Launched>> {
+        self.start(spec).map(|()| None)
     }
     /// Mark session `name` with the run ID of the supervisor in its pane.
     fn set_run_marker(&self, _name: &str, _run_id: &str) -> Result<()> {

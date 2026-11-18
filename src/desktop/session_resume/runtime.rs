@@ -1127,7 +1127,7 @@ impl Runtime {
                 if since.elapsed() >= self.record_grace
                     && gap
                         .supervisor
-                        .as_ref()
+                        .as_mut()
                         .is_some_and(ready::Supervisor::exited)
                 {
                     return self.end_wait(store, &id, ready::READY_GONE);
@@ -1161,6 +1161,8 @@ impl Runtime {
         let store_roots = roots.clone();
         let observation_wait = self.observation_wait;
         let observing = consent.clone();
+        // The birth an earlier read pinned stays with the same supervisor.
+        let known = gap.supervisor.clone();
         #[cfg(target_os = "linux")]
         let image = self.image.clone();
         #[cfg(test)]
@@ -1183,6 +1185,7 @@ impl Runtime {
                     &plan,
                     &run,
                     deadline,
+                    known.as_ref(),
                     |args, input, until| {
                         observe(
                             args,

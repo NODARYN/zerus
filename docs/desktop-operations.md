@@ -529,10 +529,10 @@ one `hgs send <session> --json` bound to the run that resume returned:
   store and projected by the CLI's own observation rule
   (`session_action::status`, as `observe_original` applies it). Its exact
   `failed` receipt is Failed (`session_resume_refused`): the CLI writes it
-  before its launch began, or once the resumed terminal is absent by the
-  terminal's own answer, twice in a row, before any record of the new run
-  while the session's record still names the original run (zerus-5sl7r), so
-  nothing was resumed and nothing remains. `claimed`,
+  before its launch began, or once the server that created the resumed
+  terminal says, twice in a row, that it has no such pane, before any record
+  of the new run while the session's record still names the original run
+  (zerus-5sl7r), so nothing was resumed and nothing remains. `claimed`,
   `uncertain` and anything else are not. The send is Recorded only by the
   deferred send's own `input_receipts` rule for the bound stdin. NotStarted
   (`session_resume_not_started`) is only for a child the operation's own
@@ -558,10 +558,20 @@ deadline. `completed` means the resumed run's supervisor wrote the session's
 record of that run, or, for a start slower than `hgs session-action`'s own
 10-second wait (a login shell, its hooks or the state lock before that first
 record), that its terminal was positively alive then; the agent confirms its
-conversation later (zerus-5sl7r). A dead pane kept, or a terminal never
-observed exactly by then, is `uncertain`. Each observation of the terminal
-has a 2-second deadline and the C locale; a failed, refused or late one is
-never read as an absent terminal. A resume that is not recorded ends the send.
+conversation later (zerus-5sl7r). A start seen alive whose terminal cannot be
+observed at the end of those 10 seconds is followed for at most 8 more, until
+an exact observation decides. A dead pane kept, or a terminal never observed
+exactly, is `uncertain`.
+
+Each observation is of the exact terminal the resume created, as its server
+answered the launch: on tmux the server's pid and start time and the pane's
+`%N` (`new-session -P`), on the Windows session host the host's pid and
+creation time and the pane. Only that server says the pane is gone. A
+missing or refused socket, no host, a server or host other than the one that
+created the pane (one started at the same path while the original runs on),
+or a failed or late answer is never read as an absent terminal. Each
+observation, its connection included, has a 2-second deadline; tmux's runs in
+the C locale. A resume that is not recorded ends the send.
 
 After a recorded resume the same live operation waits, and only it. The wait
 has one budget of 180 seconds from the resume's drain, as long as the direct
@@ -577,10 +587,14 @@ checked before and after:
 - not written yet, unreadable, or starting or busy: read again;
 - failed, ending or out of its conversation: the wait ends without the send
   (`session_resume_ready_ended`);
-- its recorded supervisor exactly exited (no process has its pid, or the one
-  that has it started at another time) without recording an end: the wait
-  ends without the send (`session_resume_ready_gone`, zerus-5sl7r). A start
-  that cannot be read proves nothing.
+- its recorded supervisor exactly exited without recording an end: the wait
+  ends without the send (`session_resume_ready_gone`, zerus-5sl7r). Exact
+  exit is no process at its pid (or only its zombie), or another kernel birth
+  there (start ticks on Linux, the stored start on macOS) than the one the
+  wait pinned when the process showed the recorded start. The recorded start
+  is wall-clock text, which Linux derives from a boot wall time that moves
+  when the clock is set: a start that differs while a process lives, or one
+  that cannot be read, proves nothing.
 
 A record that becomes unreadable after a readable one (an atomic update can
 fail one held read) ends the wait only once it stayed unreadable for 10

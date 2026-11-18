@@ -1256,24 +1256,38 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         if dry {
             print_resume(&spec);
         } else {
-            if let Some(scope)=scope {scope.changing();}
-            backend::current().start(&spec)?;
+            if let Some(scope) = scope {
+                scope.changing();
+            }
             if scope.is_some() {
+                // The terminal it creates, as its server answered the launch:
+                // what the scoped resume observes (zerus-5sl7r).
+                let launched = backend::current().start_observed(&spec)?;
                 started = Some((
                     name,
                     spec.name,
+                    launched,
                     new_run,
                     string(&current, "conversation_id").to_owned(),
                 ));
             } else {
+                backend::current().start(&spec)?;
                 println!("hgs: resuming {name}");
             }
         }
     }
     // The supervisor writes its record under this same lock.
     drop(guard);
-    if let (Some(scope), Some((name, terminal, run, conversation))) = (scope, started) {
-        supervisor_started(&name, &terminal, &run, scope, SUPERVISOR_START_WAIT)?;
+    if let (Some(scope), Some((name, terminal, launched, run, conversation))) = (scope, started) {
+        supervisor_started(
+            &name,
+            &terminal,
+            launched.as_ref(),
+            &run,
+            scope,
+            SUPERVISOR_START_WAIT,
+            OBSERVATION_GAP_WAIT,
+        )?;
         scope.result(&name, &run, &conversation, None);
     }
     Ok(0)
@@ -1284,50 +1298,65 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
 /// 45 s): a run still starting in a terminal positively alive by then is
 /// reported, and the caller's own wait follows it (zerus-5sl7r).
 const SUPERVISOR_START_WAIT: Duration = Duration::from_secs(10);
+/// How much longer it follows a start it saw alive while its terminal
+/// cannot be observed at the end of [`SUPERVISOR_START_WAIT`]: a short
+/// observation gap, still well within the desktop's 30 s.
+const OBSERVATION_GAP_WAIT: Duration = Duration::from_secs(8);
 /// The bound of one terminal observation within that wait.
 const TERMINAL_PROBE_WAIT: Duration = Duration::from_secs(2);
 
 /// A scoped resume (`hgs session-action`, whose receipt the desktop and the
 /// phone act on) follows the exact run it started until that run's
 /// supervisor wrote the session's record of it (zerus-5sl7r), and reports
-/// only what it observed exactly:
+/// only what it observed exactly. It observes the exact terminal it created
+/// ([`backend::Launched`]: that server, that pane), never a terminal by name:
 /// - the record names the run: completed;
-/// - the terminal is absent by its own answer, twice in a row, while the
-///   record still names the stopped run it resumed (the scope's): it
-///   started nothing and left nothing, a definite failure; absent with a
-///   record that moved on otherwise: uncertain;
+/// - the server that created the pane says, twice in a row, that it has no
+///   such pane, while the record still names the stopped run it resumed (the
+///   scope's): it started nothing and left nothing, a definite failure;
+///   gone with a record that moved on otherwise: uncertain;
 /// - its command ended and its dead pane stays: uncertain;
 /// - at the end of `wait` a terminal positively alive is a slow start (a
 ///   login shell, its hooks or the state lock before the first record):
 ///   completed, as an unscoped resume reports at once, and the caller's
-///   readiness wait follows the run; one never observed exactly then is
-///   uncertain.
+///   readiness wait follows the run. A start seen alive that cannot be
+///   observed then is followed for at most `gap` more, until an exact
+///   observation decides as above; one never observed exactly is uncertain.
 ///
-/// A failed, refused or late observation ([`backend::TerminalState::Unknown`])
-/// is never absence: it only keeps the wait. Each observation is bounded by
-/// [`TERMINAL_PROBE_WAIT`] and what is left of `wait`.
+/// A failed, refused or late observation, or an answer of another server
+/// ([`backend::TerminalState::Unknown`]), is never absence: it only keeps the
+/// wait. Each observation is bounded by [`TERMINAL_PROBE_WAIT`] and what is
+/// left of the wait. A launch whose server named no terminal is never
+/// observed: only its record can complete it.
 fn supervisor_started(
     name: &str,
     terminal: &str,
+    launched: Option<&backend::Launched>,
     run: &str,
     scope: &session_action::Scope,
     wait: Duration,
+    gap: Duration,
 ) -> Result<()> {
     use backend::TerminalState;
     let recorded = || read(name).is_ok_and(|record| string(&record, "run_id") == run);
     let until = Instant::now() + wait;
     let mut absent_before = false;
+    let mut seen_alive = false;
     loop {
         if recorded() {
             return Ok(());
         }
-        let left = until.saturating_duration_since(Instant::now());
-        let state = backend::current().terminal_state(
-            terminal,
-            TERMINAL_PROBE_WAIT
-                .min(left)
-                .max(Duration::from_millis(200)),
-        );
+        // Past `wait` only a start seen alive is still followed.
+        let end = if seen_alive { until + gap } else { until };
+        let left = end.saturating_duration_since(Instant::now());
+        let state = launched.map_or(TerminalState::Unknown, |launched| {
+            backend::current().terminal_state(
+                launched,
+                TERMINAL_PROBE_WAIT
+                    .min(left)
+                    .max(Duration::from_millis(200)),
+            )
+        });
         // Its record may have landed during the observation.
         if state != TerminalState::Alive && recorded() {
             return Ok(());
@@ -1352,16 +1381,23 @@ fn supervisor_started(
             _ => {}
         }
         absent_before = state == TerminalState::Absent;
+        seen_alive |= state == TerminalState::Alive;
         // A first absence is confirmed by one more observation, even at the
         // end: the next one returns either way.
-        if Instant::now() >= until && !absent_before {
-            if state == TerminalState::Alive {
-                return Ok(());
+        let now = Instant::now();
+        if now >= until && !absent_before {
+            match state {
+                TerminalState::Alive => return Ok(()),
+                // An observation gap after a live start: follow the same
+                // launch a little longer.
+                _ if seen_alive && now < until + gap => {}
+                _ => {
+                    return Err(format!(
+                        "{name}: the resumed supervisor did not record its start within {} s and its terminal could not be observed; inspect the session",
+                        wait.as_secs()
+                    ))
+                }
             }
-            return Err(format!(
-                "{name}: the resumed supervisor did not record its start within {} s and its terminal could not be observed; inspect the session",
-                wait.as_secs()
-            ));
         }
         std::thread::sleep(Duration::from_millis(100));
     }

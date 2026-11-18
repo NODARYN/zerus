@@ -326,32 +326,87 @@ pub(crate) fn resumed_readiness(record: &Value) -> Readiness {
     Readiness::Ready
 }
 
-/// The supervisor `record` names, by its pid and start, when it names both
-/// (zerus-5sl7r).
+/// A resumed run's supervisor as its record names it, by its pid and start,
+/// with the kernel birth of the process once seen with that start
+/// (zerus-5sl7r). The recorded start is wall-clock text: Linux derives it from
+/// the boot wall time, which moves when the clock is set, so the same live
+/// process can show another start later. A different start alone therefore
+/// proves nothing; only the kernel birth (start ticks on Linux, the stored
+/// start on macOS) tells another process at the pid from the same one.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn resumed_supervisor(record: &Value) -> Option<(u32, String)> {
-    let supervisor = &record["supervisor"];
-    let start = string(supervisor, "start");
-    let pid = supervisor["pid"]
-        .as_u64()
-        .and_then(|pid| u32::try_from(pid).ok())
-        .unwrap_or(0);
-    (pid > 0 && !start.is_empty()).then(|| (pid, start.to_owned()))
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResumedSupervisor {
+    pid: u32,
+    start: String,
+    birth: Option<String>,
 }
 
-/// Whether the process `pid` that started at `start` exactly exited: no
-/// process has that pid, or the one that has it started at another time. A
-/// start that cannot be read proves nothing (zerus-5sl7r).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn process_exited(pid: u32, start: &str) -> bool {
-    exited_by(pid, start, crate::platform::process_start_time(pid))
-}
+impl ResumedSupervisor {
+    /// The supervisor `record` names, when it names both its pid and start.
+    pub(crate) fn of(record: &Value) -> Option<Self> {
+        let supervisor = &record["supervisor"];
+        let start = string(supervisor, "start");
+        let pid = supervisor["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .unwrap_or(0);
+        (pid > 0 && !start.is_empty()).then(|| Self {
+            pid,
+            start: start.to_owned(),
+            birth: None,
+        })
+    }
 
-/// [`process_exited`] by `now`, the start the pid has now: empty when no
-/// process has it, None when it cannot be read.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn exited_by(pid: u32, start: &str, now: Option<String>) -> bool {
-    pid > 0 && !start.is_empty() && now.is_some_and(|now| now != start)
+    /// This supervisor with the birth `known` pinned, when `known` names the
+    /// same pid and start.
+    pub(crate) fn keeping(mut self, known: Option<&Self>) -> Self {
+        if let Some(known) =
+            known.filter(|known| (known.pid, &known.start) == (self.pid, &self.start))
+        {
+            self.birth.clone_from(&known.birth);
+        }
+        self
+    }
+
+    /// Whether it exactly exited: no process has its pid (or only its zombie
+    /// does), or the process there has another kernel birth than the one
+    /// pinned. A live process at its pid whose birth was never pinned, or
+    /// whose start cannot be read, proves nothing. A live process whose start
+    /// matches the record has its birth pinned, read before and after the
+    /// start so that both describe one process.
+    pub(crate) fn exited(&mut self) -> bool {
+        self.exited_by(
+            |pid, birth| crate::platform::process_state(pid, birth).ok(),
+            |pid| crate::platform::process_identity(pid).map(|identity| identity.birth),
+            crate::platform::process_start_time,
+        )
+    }
+
+    /// [`Self::exited`] by `state` (the pid's state against a birth),
+    /// `birth` (the pid's kernel birth) and `start` (its wall-clock start).
+    fn exited_by(
+        &mut self,
+        state: impl Fn(u32, Option<&str>) -> Option<crate::platform::ProcessState>,
+        birth: impl Fn(u32) -> Option<String>,
+        start: impl Fn(u32) -> Option<String>,
+    ) -> bool {
+        use crate::platform::ProcessState::Exited;
+        if let Some(pinned) = &self.birth {
+            return state(self.pid, Some(pinned)) == Some(Exited);
+        }
+        if state(self.pid, None) == Some(Exited) {
+            return true;
+        }
+        let before = birth(self.pid);
+        if before.is_some()
+            && start(self.pid).as_deref() == Some(self.start.as_str())
+            && birth(self.pid) == before
+        {
+            self.birth = before;
+        }
+        false
+    }
 }
 
 /// Whether the agent has not confirmed the last input hgs typed (zerus-iitw8).
@@ -2467,39 +2522,77 @@ mod tests {
     }
 
     /// zerus-5sl7r: a recorded supervisor exited only by exact evidence: no
-    /// process has its pid, or the one that has it started at another time.
-    /// A live one, a start that cannot be read, or a record without both its
-    /// pid and start says nothing.
+    /// process at its pid (or only its zombie), or another kernel birth than
+    /// the one pinned when its start matched. A start that differs while a
+    /// process lives (a wall clock set since, as Linux derives the start from
+    /// the boot wall time), a start that cannot be read, or a record without
+    /// both its pid and start says nothing.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_resumed_supervisor_exited_only_by_exact_evidence() {
+        use crate::platform::ProcessState::{Exited, Running};
         let pid = std::process::id();
         let record =
             |supervisor: Value| json!({"name": "claude/resumed", "supervisor": supervisor});
-        let own = (pid, process_start(pid));
+        let named = |start: &str| {
+            ResumedSupervisor::of(&record(json!({"pid": pid, "start": start}))).unwrap()
+        };
+        let own = process_start(pid);
+        let mut supervisor = named(&own);
+        assert_eq!((supervisor.pid, supervisor.birth.as_deref()), (pid, None));
+        // Live with its recorded start: its birth is pinned.
+        assert!(!supervisor.exited());
+        let birth = crate::platform::process_identity(pid).unwrap().birth;
+        assert_eq!(supervisor.birth.as_deref(), Some(birth.as_str()));
+        // Live with another start (a clock set since): nothing, nothing pinned.
+        let mut shifted = named("Thu Jan  1 00:00:03 1970");
+        assert!(!shifted.exited());
+        assert_eq!(shifted.birth, None);
+        // A pinned birth is kept for the same pid and start only.
         assert_eq!(
-            resumed_supervisor(&record(json!({"pid": own.0, "start": own.1}))),
-            Some(own.clone())
+            named(&own).keeping(Some(&supervisor)).birth,
+            Some(birth.clone())
         );
-        assert!(!process_exited(own.0, &own.1));
-        assert!(process_exited(pid, "another birth"));
-        // A finished child of this test: its pid no longer has that start.
+        assert_eq!(named("other").keeping(Some(&supervisor)).birth, None);
+        // Another birth at the pid than the one pinned: another process.
+        let mut reused = named(&own);
+        reused.birth = Some(format!("{birth}0"));
+        assert!(reused.exited());
+        // A finished child of this test: no process has its pid any more.
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .unwrap();
-        let (gone, start) = (child.id(), process_start(child.id()));
+        let start = process_start(child.id());
+        let mut gone =
+            ResumedSupervisor::of(&record(json!({"pid": child.id(), "start": start}))).unwrap();
         assert!(!start.is_empty());
-        assert!(!process_exited(gone, &start));
+        assert!(!gone.exited());
+        assert!(gone.birth.is_some());
+        let mut unpinned =
+            ResumedSupervisor::of(&record(json!({"pid": child.id(), "start": "other"}))).unwrap();
         child.kill().unwrap();
         child.wait().unwrap();
-        assert!(process_exited(gone, &start));
-        // An unreadable start is no evidence; an empty one is no process.
-        assert!(!exited_by(gone, &start, None));
-        assert!(exited_by(gone, &start, Some(String::new())));
-        assert!(!exited_by(gone, &start, Some(start.clone())));
-        assert!(!exited_by(0, &start, Some(String::new())));
-        assert!(!exited_by(gone, "", Some(String::new())));
+        assert!(gone.exited());
+        assert!(unpinned.exited());
+        // The rule alone: an unreadable state or birth proves nothing.
+        let mut any = named("start");
+        assert!(!any.exited_by(|_, _| None, |_| None, |_| None));
+        assert!(any.exited_by(|_, _| Some(Exited), |_| None, |_| None));
+        assert!(!any.exited_by(|_, _| Some(Running), |_| Some("7".into()), |_| None));
+        assert!(!any.exited_by(|_, _| Some(Running), |_| None, |_| Some("start".into())));
+        assert_eq!(any.birth, None);
+        assert!(!any.exited_by(
+            |_, _| Some(Running),
+            |_| Some("7".into()),
+            |_| Some("start".into())
+        ));
+        assert_eq!(any.birth.as_deref(), Some("7"));
+        assert!(any.exited_by(
+            |_, birth| (birth == Some("7")).then_some(Exited),
+            |_| None,
+            |_| None
+        ));
         for unknown in [
             json!({}),
             json!(null),
@@ -2509,7 +2602,7 @@ mod tests {
             json!({"pid": pid, "start": ""}),
         ] {
             assert_eq!(
-                resumed_supervisor(&record(unknown.clone())),
+                ResumedSupervisor::of(&record(unknown.clone())),
                 None,
                 "{unknown}"
             );

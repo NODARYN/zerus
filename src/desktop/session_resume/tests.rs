@@ -776,7 +776,16 @@ fn only_the_resumed_runs_ready_record_lets_the_send_start() {
     );
     assert_eq!(read(&state), Readiness::Ended(READY_ENDED));
     // Its supervisor no longer runs and recorded no end: gone, however its
-    // agent's fields read (zerus-5sl7r).
+    // agent's fields read (zerus-5sl7r). A live supervisor whose recorded
+    // start differs from what its process shows now (a clock set since) is
+    // not: the start is wall-clock text.
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let (ended, ended_start) = (child.id(), started(child.id()));
+    child.kill().unwrap();
+    child.wait().unwrap();
     for ready in [false, true] {
         resumed_record(&state, ready);
         let path = state.join(format!(
@@ -784,9 +793,12 @@ fn only_the_resumed_runs_ready_record_lets_the_send_start() {
             <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
         ));
         let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        record["supervisor"] = json!({"pid": pid, "start": "an earlier process"});
+        record["supervisor"] = json!({"pid": ended, "start": ended_start});
         session_record(&state, SESSION, "claude", RESUMED, record.clone());
         assert_eq!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
+        record["supervisor"] = json!({"pid": pid, "start": "Thu Jan  1 00:00:03 1970"});
+        session_record(&state, SESSION, "claude", RESUMED, record.clone());
+        assert_ne!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
         record["supervisor"] = json!({"pid": pid, "start": start});
         session_record(&state, SESSION, "claude", RESUMED, record);
         assert_ne!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
@@ -2755,6 +2767,52 @@ else:
                 }
             }
         }
+        /// Puts the private server's socket back where a case moved it,
+        /// ending first a server a case started in its place.
+        struct Restore {
+            program: PathBuf,
+            socket: PathBuf,
+            hidden: PathBuf,
+        }
+        impl Restore {
+            fn now(&self) {
+                if !self.hidden.exists() {
+                    return;
+                }
+                if self.socket.exists() {
+                    let _ = Command::new(&self.program)
+                        .arg("-S")
+                        .arg(&self.socket)
+                        .args(["-f", "/dev/null", "kill-server"])
+                        .output();
+                    let _ = std::fs::remove_file(&self.socket);
+                }
+                std::fs::rename(&self.hidden, &self.socket).unwrap();
+            }
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if self.hidden.exists() {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.now()));
+                }
+            }
+        }
+        /// The lines of the shim's log of the resume's terminal observations.
+        fn observations(root: &Path) -> Vec<String> {
+            std::fs::read_to_string(root.join("observe.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+        /// `text`, a start as `ps` prints it, `seconds` later.
+        fn shifted(text: &str, seconds: i64) -> String {
+            const FORMAT: &str = "%a %b %e %H:%M:%S %Y";
+            (chrono::NaiveDateTime::parse_from_str(text, FORMAT).unwrap()
+                + chrono::TimeDelta::seconds(seconds))
+            .format(FORMAT)
+            .to_string()
+        }
         fn fake_agent(cli: &Path) -> PathBuf {
             std::env::var_os("HGS_TEST_FAKE_AGENT")
                 .map(PathBuf::from)
@@ -2794,7 +2852,18 @@ else:
                 "blocked_probe",
                 "slow_start",
                 "late_gap",
-            ] {
+                "moved_socket",
+                "replacement_server",
+                "cutoff_gap",
+                "clock_shift",
+                "shifted_record",
+            ]
+            .into_iter()
+            .filter(|case| {
+                // A comma list here runs only those cases (a mutant's own).
+                std::env::var("HGS_TEST_SESSION_RESUME_REAL_ONLY")
+                    .map_or(true, |only| only.split(',').any(|named| named == *case))
+            }) {
                 let dir = tempfile::Builder::new()
                     .prefix("hgs-rs-")
                     .tempdir_in(base)
@@ -2914,6 +2983,34 @@ else:
         #[ignore = "Run only by real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends in its private environment"]
         fn private_case() {
             let case = std::env::var(CASE).expect("run only by its parent test");
+            if case == "clock_shift" {
+                // The review's classifier probe (zerus-5sl7r P2): a live
+                // process whose recorded start is three seconds off, as a
+                // supervisor records it under a boot wall time read before
+                // the clock was set. It is not an exit; only its end is.
+                let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+                let pid = child.id();
+                let start = crate::platform::process_start_time(pid).unwrap();
+                let named = |start: &str| {
+                    crate::state::ResumedSupervisor::of(
+                        &json!({"supervisor": {"pid": pid, "start": start}}),
+                    )
+                    .unwrap()
+                };
+                let (mut earlier, mut exact) = (named(&shifted(&start, -3)), named(&start));
+                let live = (earlier.exited(), exact.exited());
+                assert!(child.try_wait().unwrap().is_none());
+                child.kill().unwrap();
+                child.wait().unwrap();
+                let ended = (earlier.exited(), exact.exited());
+                println!(
+                    "live pid {pid}: start {start:?}, recorded {:?}: exited while live {live:?}, after its end {ended:?}",
+                    shifted(&start, -3)
+                );
+                assert_eq!((live, ended), ((false, false), (true, true)));
+                println!("SESSION_RESUME_REAL_EXECUTED={case}");
+                return;
+            }
             let cli = cli();
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().canonicalize().unwrap();
@@ -2935,37 +3032,80 @@ else:
                     .into(),
                 std::env::var_os(SOCKET).expect("set by the parent").into(),
             );
-            // The reviewer's cases of zerus-5sl7r: the next `has-session`
-            // calls fail (`fail-reads` counts them down) or one hangs
-            // (`hang-one-read`), the login shell starts late (`shell-delay`),
-            // the agent starts late (`agent-delay`). Every `has-session` is
-            // logged with what the shim did.
+            let hidden = server.1.with_extension("hidden");
+            let _restore = Restore {
+                program: server.0.clone(),
+                socket: server.1.clone(),
+                hidden: hidden.clone(),
+            };
+            // The reviewers' cases of zerus-5sl7r, on the resume's terminal
+            // observations (`display-message` of the launched pane with the
+            // server's start time), each logged with its answer:
+            // - the next ones fail (`fail-reads` counts them down) or one
+            //   hangs (`hang-one-read`);
+            // - those from 8.6 s to 12.1 s after the launch fail as a reset
+            //   connection would (`gap-window`);
+            // - right after the launch the socket is moved away
+            //   (`hide-socket`), and a sessionless server is started at its
+            //   path (`replace-server`).
+            // The login shell starts late (`shell-delay`), the agent too
+            // (`agent-delay`).
             script(
                 "tmux",
                 format!(
                     r#"#!/bin/sh
-if test "$1" = has-session && test -s '{root}/fail-reads'; then
-    left=$(cat '{root}/fail-reads')
-    if test "$left" -gt 0; then
-        echo $((left - 1)) > '{root}/fail-reads'
-        echo "$*: injected exit 127" >> '{root}/has-session.log'
+tmux() {{ {program} -S {socket} -f /dev/null "$@"; }}
+if test "$1" = new-session; then
+    test -e '{root}/gap-window' && date +%s%N > '{root}/launched-at'
+    if test -e '{root}/hide-socket'; then
+        rm '{root}/hide-socket'
+        tmux "$@" || exit
+        mv {socket} {hidden}
+        if test -e '{root}/replace-server'; then
+            printf 'set -g exit-empty off\n' > '{root}/replacement.conf'
+            {program} -S {socket} -f '{root}/replacement.conf' start-server >/dev/null 2>&1
+            tmux display-message -p '#{{pid}}' > '{root}/replacement-pid' 2>&1
+        fi
+        exit 0
+    fi
+    exec {program} -S {socket} -f /dev/null "$@"
+fi
+case "$*" in *'#{{start_time}}'*) observed=$1 ;; *) observed= ;; esac
+if test "$observed" = display-message; then
+    log() {{ echo "$(date +%s%N) $*" >> '{root}/observe.log'; }}
+    if test -s '{root}/fail-reads' && test "$(cat '{root}/fail-reads')" -gt 0; then
+        echo $(($(cat '{root}/fail-reads') - 1)) > '{root}/fail-reads'
+        log injected exit 127
         echo 'synthetic tmux observation error' >&2
         exit 127
     fi
-fi
-if test "$1" = has-session && test -e '{root}/hang-one-read'; then
-    /bin/rm '{root}/hang-one-read'
-    echo "$*: injected hang" >> '{root}/has-session.log'
-    exec sleep 60
-fi
-if test "$1" = has-session; then
-    echo "$*: passed to tmux" >> '{root}/has-session.log'
+    if test -e '{root}/hang-one-read'; then
+        rm '{root}/hang-one-read'
+        log injected hang
+        exec sleep 60
+    fi
+    age=
+    if test -e '{root}/launched-at'; then
+        age=$(( $(date +%s%N) - $(cat '{root}/launched-at') ))
+        if test "$age" -ge 8600000000 && test "$age" -le 12100000000; then
+            log injected reset at $age
+            echo 'error connecting to temporary fixture (Connection reset by peer)' >&2
+            exit 1
+        fi
+    fi
+    tmux "$@" > '{root}/answer' 2> '{root}/answer-error'
+    rc=$?
+    log "rc=$rc out=$(tr '\t\n' '| ' < '{root}/answer') err=$(tr '\n' ' ' < '{root}/answer-error') age=$age"
+    cat '{root}/answer'
+    cat '{root}/answer-error' >&2
+    exit $rc
 fi
 exec {program} -S {socket} -f /dev/null "$@"
 "#,
                     root = root.display(),
                     program = server.0.display(),
-                    socket = server.1.display()
+                    socket = server.1.display(),
+                    hidden = hidden.display()
                 ),
             );
             script(
@@ -3115,6 +3255,7 @@ exec '{}' "$@"
                     .status
                     .success());
             }
+            let marker = |file: &str| std::fs::write(root.join(file), "").unwrap();
             match case.as_str() {
                 // Observations fail, several in a row, while the pane lives.
                 "tmux_read_error" => {
@@ -3124,11 +3265,29 @@ exec '{}' "$@"
                 // The first observation never ends by itself.
                 "blocked_probe" => {
                     std::fs::write(root.join("shell-delay"), "3").unwrap();
-                    std::fs::write(root.join("hang-one-read"), "").unwrap();
+                    marker("hang-one-read");
                 }
                 // Past session-action's own wait, in a live terminal.
                 "slow_start" => std::fs::write(root.join("shell-delay"), "18").unwrap(),
                 "late_gap" => std::fs::write(root.join("agent-delay"), "14").unwrap(),
+                // The server's socket is moved away right after the launch;
+                // the original server and its pane run on.
+                "moved_socket" => {
+                    std::fs::write(root.join("shell-delay"), "4").unwrap();
+                    marker("hide-socket");
+                }
+                // ... and a new, sessionless server runs at its path.
+                "replacement_server" => {
+                    std::fs::write(root.join("shell-delay"), "4").unwrap();
+                    marker("hide-socket");
+                    marker("replace-server");
+                }
+                // Observations of a slow start fail across the 10 s cutoff.
+                "cutoff_gap" => {
+                    std::fs::write(root.join("shell-delay"), "18").unwrap();
+                    marker("gap-window");
+                }
+                "shifted_record" => std::fs::write(root.join("agent-delay"), "8").unwrap(),
                 _ => (),
             }
             let original = original_at(
@@ -3171,6 +3330,74 @@ exec '{}' "$@"
                     withheld.elapsed()
                 );
             }
+            if matches!(case.as_str(), "moved_socket" | "replacement_server") {
+                // Two observations in a row reach no server, or another one:
+                // what #2516's first head took for a gone terminal.
+                let answered_by_other = |line: &String| {
+                    let replacement =
+                        std::fs::read_to_string(root.join("replacement-pid")).unwrap_or_default();
+                    !replacement.trim().is_empty()
+                        && line.contains(&format!("rc=0 out={}:", replacement.trim()))
+                };
+                f.until("two observations without the original server", |_| {
+                    let lines = observations(&root);
+                    if case == "moved_socket" {
+                        lines
+                            .iter()
+                            .filter(|line| line.contains("(No such file or directory)"))
+                            .count()
+                            >= 2
+                    } else {
+                        lines.iter().filter(|line| answered_by_other(line)).count() >= 2
+                    }
+                });
+                assert!(!f.row(&original).receipt.drained);
+                _restore.now();
+                println!(
+                    "socket restored after {:?}; observations so far:\n{}",
+                    admitted.elapsed(),
+                    observations(&root).join("\n")
+                );
+            }
+            if case == "shifted_record" {
+                // The recorded start of the live supervisor reads three
+                // seconds earlier than its process shows, as a boot wall time
+                // read before the clock was set makes it (zerus-5sl7r P2).
+                f.until("the recorded resume", |f| {
+                    f.row(&original).receipt.resume.step == Step::Recorded
+                });
+                let path = record_path_of(&f.state, name);
+                let mut record: Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                let start = record["supervisor"]["start"].as_str().unwrap().to_owned();
+                let pid = record["supervisor"]["pid"].as_u64().unwrap() as u32;
+                assert_eq!(
+                    crate::platform::process_start_time(pid).as_deref(),
+                    Some(start.as_str())
+                );
+                let earlier = shifted(&start, -3);
+                record["supervisor"]["start"] = json!(earlier);
+                let next = path.with_extension("shifting");
+                std::fs::write(&next, serde_json::to_vec(&record).unwrap()).unwrap();
+                std::fs::rename(&next, &path).unwrap();
+                let since = Instant::now();
+                f.until("several reads of the shifted record", |_| {
+                    since.elapsed() >= Duration::from_millis(2500)
+                });
+                let read: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                assert_eq!(read["supervisor"]["start"], earlier.as_str());
+                assert!(
+                    !f.row(&original).receipt.drained,
+                    "a shifted start ended the wait"
+                );
+                record["supervisor"]["start"] = json!(start);
+                std::fs::write(&next, serde_json::to_vec(&record).unwrap()).unwrap();
+                std::fs::rename(&next, &path).unwrap();
+                println!(
+                    "the live supervisor {pid} was recorded as started at {earlier:?}, not {start:?}, for {:?}",
+                    since.elapsed()
+                );
+            }
             f.until("the operation to settle", |f| {
                 f.row(&original).receipt.drained
             });
@@ -3190,25 +3417,37 @@ exec '{}' "$@"
             println!("settled after {:?}", admitted.elapsed());
             println!("panes:\n{panes}");
             assert!(!panes.contains("memfd"), "{panes}");
+            let observed = observations(&root);
+            println!("observations:\n{}", observed.join("\n"));
             match case.as_str() {
-                "resume" | "tmux_read_error" | "blocked_probe" | "slow_start" | "late_gap" => {
+                "resume" | "tmux_read_error" | "blocked_probe" | "slow_start" | "late_gap"
+                | "moved_socket" | "replacement_server" | "cutoff_gap" | "shifted_record" => {
+                    let count =
+                        |text: &str| observed.iter().filter(|line| line.contains(text)).count();
                     match case.as_str() {
-                        "tmux_read_error" | "blocked_probe" => {
-                            let log = std::fs::read_to_string(root.join("has-session.log"))
-                                .unwrap_or_default();
-                            println!("has-session calls:\n{log}");
-                            let injected = if case == "tmux_read_error" {
-                                "injected exit 127"
-                            } else {
-                                "injected hang"
-                            };
-                            assert_eq!(
-                                log.matches(injected).count(),
-                                if case == "tmux_read_error" { 3 } else { 1 },
-                                "{log}"
-                            );
-                        }
+                        "tmux_read_error" => assert_eq!(count("injected exit 127"), 3),
+                        "blocked_probe" => assert_eq!(count("injected hang"), 1),
                         "slow_start" => assert!(admitted.elapsed() >= Duration::from_secs(18)),
+                        "cutoff_gap" => {
+                            // Good answers, then only failed ones across the
+                            // 10 s cutoff, then good ones again.
+                            let ages = |marker: &str| -> Vec<u64> {
+                                observed
+                                    .iter()
+                                    .filter(|line| line.contains(marker))
+                                    .filter_map(|line| line.rsplit_once(['=', ' ']))
+                                    .filter_map(|(_, age)| age.trim().parse().ok())
+                                    .collect()
+                            };
+                            let (good, reset) = (ages("rc=0 out="), ages("injected reset at "));
+                            assert!(
+                                good.iter().filter(|&&age| age < 8_600_000_000).count() >= 2,
+                                "{good:?}"
+                            );
+                            assert!(reset.iter().any(|&age| age > 10_000_000_000), "{reset:?}");
+                            assert!(good.iter().any(|&age| age > 12_100_000_000), "{good:?}");
+                            assert!(admitted.elapsed() >= Duration::from_secs(18));
+                        }
                         _ => (),
                     }
                     assert_eq!(

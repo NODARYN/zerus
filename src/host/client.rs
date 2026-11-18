@@ -79,6 +79,15 @@ impl Connection {
     /// Say hello as `role` and read the host's answer, waiting at most
     /// `HELLO_ANSWER_TIMEOUT` for it.
     pub(crate) fn hello(link: Arc<dyn Link>, role: Role) -> Result<Self, ClientError> {
+        Self::hello_within(link, role, HELLO_ANSWER_TIMEOUT)
+    }
+
+    /// [`Self::hello`], waiting at most `wait` for the answer.
+    pub(crate) fn hello_within(
+        link: Arc<dyn Link>,
+        role: Role,
+        wait: Duration,
+    ) -> Result<Self, ClientError> {
         let early = |error: FrameError| match error {
             FrameError::Io(_) | FrameError::Truncated => ClientError::Closed,
             other => ClientError::Protocol(format!("invalid session host hello answer: {other}")),
@@ -86,7 +95,7 @@ impl Connection {
         let unusable = |error: io::Error| {
             ClientError::Connect(format!("the session host connection failed: {error}"))
         };
-        link.set_read_timeout(Some(HELLO_ANSWER_TIMEOUT))
+        link.set_read_timeout(Some(wait.max(Duration::from_millis(1))))
             .map_err(unusable)?;
         write_json(&*link, Kind::Json, &Hello::new(role)).map_err(early)?;
         let frame = link
@@ -240,7 +249,7 @@ impl AttachStream {
 }
 
 #[cfg(windows)]
-pub(crate) use self::windows::{connect, connect_or_start};
+pub(crate) use self::windows::{connect, connect_or_start, connect_until};
 
 #[cfg(windows)]
 mod windows {
@@ -282,6 +291,11 @@ mod windows {
     }
 
     fn attempt(state_dir: &Path, role: Role, deadline: Instant) -> Attempt {
+        attempt_within(state_dir, role, deadline, HELLO_ANSWER_TIMEOUT)
+    }
+
+    /// [`attempt`], waiting at most `hello` for the host's hello answer.
+    fn attempt_within(state_dir: &Path, role: Role, deadline: Instant, hello: Duration) -> Attempt {
         let secret = match endpoint::existing_secret(state_dir) {
             Ok(Some(secret)) => secret,
             Ok(None) => return Attempt::Absent,
@@ -302,7 +316,7 @@ mod windows {
             Ok(pid) => pid,
             Err(error) => return Attempt::Failed(ClientError::Connect(error.to_string())),
         };
-        match Connection::hello(Arc::new(PipeLink::new(stream)), role) {
+        match Connection::hello_within(Arc::new(PipeLink::new(stream)), role, hello) {
             Err(ClientError::Closed) => Attempt::Closing,
             Err(error) => Attempt::Failed(error),
             Ok(connection) if connection.host().pid != server => {
@@ -330,6 +344,30 @@ mod windows {
                 Attempt::Busy => return Err(ClientError::Connect(ConnectError::Busy.to_string())),
                 Attempt::Failed(error) => return Err(error),
             }
+        }
+    }
+
+    /// One connect to the host of the canonical `state_dir`, the pipe and the
+    /// host's hello answer both by `until` (zerus-5sl7r: an observation within
+    /// its own deadline); a busy pipe or an exiting host is not waited for,
+    /// and none is ever started.
+    pub(crate) fn connect_until(
+        state_dir: &Path,
+        role: Role,
+        until: Instant,
+    ) -> Result<Connection, ClientError> {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ClientError::Connect(
+                "the observation's deadline passed".into(),
+            ));
+        }
+        match attempt_within(state_dir, role, until, left) {
+            Attempt::Connected(connection) => Ok(connection),
+            Attempt::Absent => Err(ClientError::NoHost),
+            Attempt::Closing => Err(ClientError::Closed),
+            Attempt::Busy => Err(ClientError::Connect(ConnectError::Busy.to_string())),
+            Attempt::Failed(error) => Err(error),
         }
     }
 
@@ -529,6 +567,47 @@ mod tests {
         drop(connection);
         server.join().unwrap();
         assert_eq!(ClientError::NoHost.to_string(), "no session host runs");
+    }
+
+    /// zerus-5sl7r: an observation's connection ends by its own deadline: a
+    /// host that takes the hello but never answers it, or a request it never
+    /// answers, ends the wait at the deadline, not at the hello's usual 10 s
+    /// or never.
+    #[test]
+    fn an_observation_waits_for_a_silent_host_only_until_its_deadline() {
+        let wait = Duration::from_millis(300);
+        let (client, host) = memory_pair();
+        let held = thread::spawn(move || {
+            host.read_frame().unwrap().unwrap();
+            thread::sleep(Duration::from_secs(3));
+        });
+        let started = std::time::Instant::now();
+        assert!(Connection::hello_within(Arc::new(client), Role::Cli, wait).is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        held.join().unwrap();
+
+        let (client, host) = memory_pair();
+        let held = thread::spawn(move || {
+            host.read_frame().unwrap().unwrap();
+            write_json(&host, Kind::Json, &HelloAnswer::Accepted(identity())).unwrap();
+            host.read_frame().unwrap().unwrap();
+            thread::sleep(Duration::from_secs(3));
+        });
+        let mut connection = Connection::hello_within(Arc::new(client), Role::Cli, wait).unwrap();
+        connection.set_read_timeout(Some(wait)).unwrap();
+        let started = std::time::Instant::now();
+        assert!(connection.request(Op::List).is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        drop(connection);
+        held.join().unwrap();
     }
 
     #[test]

@@ -19,12 +19,15 @@
 //! `hgs session-action` records the resume once the resumed run's
 //! supervisor wrote the session's record of that run, or, for a slow start,
 //! while its terminal is positively alive (zerus-5sl7r); until the record
-//! exists the wait reads again. A record whose supervisor exactly exited (no
-//! process has its pid, or one with another start) and that records no end
-//! ends the wait at once: waiting longer would only hold every later
-//! operation behind it. A record that cannot be read
+//! exists the wait reads again. A record whose supervisor exactly exited and
+//! that records no end ends the wait at once: waiting longer would only hold
+//! every later operation behind it. Exact exit is no process at its pid, or
+//! another kernel birth there than the one pinned when its recorded start
+//! matched ([`Supervisor`]); a start that differs while a process lives
+//! proves nothing, as a wall clock set since moves it. Each read keeps the
+//! birth an earlier read pinned. A record that cannot be read
 //! ([`Readiness::Unrecorded`]) proves nothing by itself; each readable one
-//! names its supervisor ([`Supervisor`]) for the runtime's rule on a read gap.
+//! names its supervisor for the runtime's rule on a read gap.
 //! The record is read from the held original root, through the same proof of
 //! exactly one record as the target check, with the root checked before and
 //! after; a replaced root ends the wait.
@@ -73,17 +76,10 @@ struct Observed {
     _reason: String,
 }
 
-/// A resumed run's supervisor, by the pid and start its record names.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Supervisor(u32, String);
-
-impl Supervisor {
-    /// Whether it exactly exited ([`crate::state::process_exited`]); a start
-    /// that cannot be read proves nothing.
-    pub(super) fn exited(&self) -> bool {
-        crate::state::process_exited(self.0, &self.1)
-    }
-}
+/// A resumed run's supervisor, by the pid and start its record names and
+/// the kernel birth pinned once its start matched
+/// ([`crate::state::ResumedSupervisor`]).
+pub(super) use crate::state::ResumedSupervisor as Supervisor;
 
 /// What the selected session's record of a run says.
 enum Record {
@@ -96,8 +92,14 @@ enum Record {
 }
 
 /// The selected session's record of `run` by the record rule alone (no
-/// terminal), from the held root.
-fn recorded(roots: &Roots, plan: &Plan, run: &str) -> Result<Record, &'static str> {
+/// terminal), from the held root; its supervisor keeps the birth `known`
+/// pinned.
+fn recorded(
+    roots: &Roots,
+    plan: &Plan,
+    run: &str,
+    known: Option<&Supervisor>,
+) -> Result<Record, &'static str> {
     if !roots.root_current() {
         return Err(ROOT_CHANGED);
     }
@@ -113,11 +115,10 @@ fn recorded(roots: &Roots, plan: &Plan, run: &str) -> Result<Record, &'static st
     let Some(record) = record else {
         return Ok(Record::Missing);
     };
-    let supervisor =
-        crate::state::resumed_supervisor(&record).map(|(pid, start)| Supervisor(pid, start));
+    let mut supervisor = Supervisor::of(&record).map(|supervisor| supervisor.keeping(known));
     Ok(match crate::state::resumed_readiness(&record) {
         ResumedReadiness::Ended => Record::Is(ResumedReadiness::Ended, supervisor),
-        _ if supervisor.as_ref().is_some_and(Supervisor::exited) => Record::Gone,
+        _ if supervisor.as_mut().is_some_and(Supervisor::exited) => Record::Gone,
         readiness => Record::Is(readiness, supervisor),
     })
 }
@@ -133,23 +134,32 @@ pub(super) fn read(
     until: Instant,
     observe: impl FnOnce(&[String], &[u8], Instant) -> Option<Vec<u8>>,
 ) -> Readiness {
-    read_supervised(roots, plan, run, until, observe).0
+    read_supervised(roots, plan, run, until, None, observe).0
 }
 
-/// [`read`], with the supervisor the record read last names.
+/// [`read`], with the supervisor the record read last names; it keeps the
+/// birth `known` pinned.
 pub(super) fn read_supervised(
     roots: &Roots,
     plan: &Plan,
     run: &str,
     until: Instant,
+    known: Option<&Supervisor>,
     observe: impl FnOnce(&[String], &[u8], Instant) -> Option<Vec<u8>>,
 ) -> (Readiness, Option<Supervisor>) {
-    match recorded(roots, plan, run) {
+    match recorded(roots, plan, run, known) {
         Err(code) => (Readiness::Ended(code), None),
         Ok(Record::Missing) => (Readiness::Unrecorded, None),
         Ok(Record::Gone) => (Readiness::Ended(READY_GONE), None),
         Ok(Record::Is(ResumedReadiness::Ended, _)) => (Readiness::Ended(READY_ENDED), None),
-        Ok(Record::Is(_, _)) if plan.observed() => observed(roots, plan, run, until, observe),
+        Ok(Record::Is(_, supervisor)) if plan.observed() => observed(
+            roots,
+            plan,
+            run,
+            until,
+            supervisor.as_ref().or(known),
+            observe,
+        ),
         Ok(Record::Is(ResumedReadiness::Ready, supervisor)) => (Readiness::Ready, supervisor),
         Ok(Record::Is(ResumedReadiness::Starting, supervisor)) => (Readiness::Waiting, supervisor),
     }
@@ -163,6 +173,7 @@ fn observed(
     plan: &Plan,
     run: &str,
     until: Instant,
+    known: Option<&Supervisor>,
     observe: impl FnOnce(&[String], &[u8], Instant) -> Option<Vec<u8>>,
 ) -> (Readiness, Option<Supervisor>) {
     let input = json!({"expected_run_id": run, "expected_conversation_id": plan.conversation_id})
@@ -173,7 +184,7 @@ fn observed(
             bytes.len() <= OBSERVATION_BYTES
                 && serde_json::from_slice::<Observed>(&bytes).is_ok_and(|reply| reply.ready)
         });
-    match recorded(roots, plan, run) {
+    match recorded(roots, plan, run, known) {
         Err(code) => (Readiness::Ended(code), None),
         Ok(Record::Gone) => (Readiness::Ended(READY_GONE), None),
         Ok(Record::Is(ResumedReadiness::Ended, _)) => (Readiness::Ended(READY_ENDED), None),
@@ -187,7 +198,7 @@ fn observed(
 /// alone: it shows the agent takes a message, or, for an observed session,
 /// that it has not ended (its observation ran just before the spawn turn).
 pub(super) fn current(roots: &Roots, plan: &Plan, run: &str) -> bool {
-    match recorded(roots, plan, run) {
+    match recorded(roots, plan, run, None) {
         Ok(Record::Is(ResumedReadiness::Ready, _)) => true,
         Ok(Record::Is(ResumedReadiness::Starting, _)) => plan.observed(),
         _ => false,
