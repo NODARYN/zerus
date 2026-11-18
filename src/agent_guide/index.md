@@ -28,5 +28,6 @@ Rules
 - After an uncertain send, inspect the session; never resend automatically.
 - Stopping, killing or archiving a session needs the owner's explicit
   permission unless you started it for this task. Prefer pause.
+- Retire finished sub-sessions you started. See hgs guide stop.
 - An older peer may lack a command: check hgs @alias -h first.
 - Contracts: docs/reference.md and docs/agent-coordination.md (Zerus repository).
