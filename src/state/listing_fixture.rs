@@ -181,6 +181,16 @@ pub(crate) fn saved_record(name: &str) -> Result<Value> {
     storage::read(name)
 }
 
+/// Temporarily withhold the saved source without changing its bytes or the
+/// index. Tests use a private root and restore the same source to recover.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn withhold_saved_record(name: &str, withheld: bool) -> Result<()> {
+    let path = storage::label_record_path(name);
+    let held = path.with_extension("withheld");
+    let (from, to) = if withheld { (path, held) } else { (held, path) };
+    std::fs::rename(from, to).map_err(|error| error.to_string())
+}
+
 /// `hgs rename from to`.
 pub(crate) fn rename(from: &str, to: &str) -> Result<()> {
     rename::dispatch(&[from.to_owned(), to.to_owned()], false).map(|_| ())

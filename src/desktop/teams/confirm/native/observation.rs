@@ -385,36 +385,50 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_member_without_any_exit_archive_stays_unknown() {
+    fn a_saved_dead_member_without_an_archive_needs_readable_exit_evidence() {
         isolated("desktop::teams::confirm::native::observation::tests::saved_without_archive_child");
     }
 
     #[test]
     #[ignore = "run by its isolated wrapper"]
     fn saved_without_archive_child() {
+        use crate::desktop::teams::confirm::test_inspect;
         let (config, mut store, stop) = store_env();
-        let (b, _, record) = real_codex(|record| {
-            record["pid"] = json!(i32::MAX);
-            record["process_start"] = json!("1");
-        });
+        let (sample, _, _) = crate::desktop::teams::confirm::policy::tests::sample();
+        let b = Binding {
+            agent: "codex".into(),
+            machine: crate::swarm::local_node_id(&config).unwrap(),
+            launch: uuid::Uuid::new_v4().to_string(),
+            session: uuid::Uuid::new_v4().to_string(),
+            run: uuid::Uuid::new_v4().to_string(),
+            conversation: uuid::Uuid::new_v4().to_string(),
+            ..sample
+        };
+        let name = "codex/example/member";
+        let record = test_inspect::save_then_exit(&config, &b, name);
         for key in ["runtime_state", "process_state", "tracked", "completion_source", "exited_at"] {
             assert!(record.get(key).is_none(), "{key}");
         }
         assert_eq!(crate::state::dispatch_test_archive_catalog_worker().unwrap(), 0);
-        let name = record["name"].as_str().unwrap();
         let native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
-        crate::desktop::teams::child::FIXTURE_RUN.with(|slot| {
-            *slot.borrow_mut() = Some(Box::new(|_, args, _| {
-                assert_eq!(args[2..5], ["inspect", "--session-id", args[4].as_str()]);
-                crate::desktop::teams::child::Ended::Exited { code: 1, output: Vec::new() }
-            }));
-        });
+        test_inspect::use_cli_inspection();
+        let (snapshot, _) = native.current(&b, name).unwrap();
+        assert!(snapshot.ended);
+        assert!(!snapshot.live && !snapshot.self_exit);
+        assert!(snapshot.archive.is_none());
+        assert_eq!(
+            crate::desktop::teams::confirm::policy::resume(&snapshot).unwrap_err(),
+            "The exit has no exact supervisor evidence"
+        );
+
+        crate::state::listing_fixture::withhold_saved_record(name, true).unwrap();
         let error = observed(name, native.current(&b, name)).unwrap_err();
         assert_eq!(
             error,
             format!("Whether member session {name} ended is unknown (No exact unique exit archive); nothing was resumed")
         );
         assert!(!config.state.join("archive-catalog-v2/teams-attempt.json").exists());
+        crate::state::listing_fixture::withhold_saved_record(name, false).unwrap();
     }
 
     #[test]

@@ -183,10 +183,9 @@ fn private_repair_worker() {
         std::env::current_dir().unwrap(),
         crate::platform::canonical(root()).unwrap()
     );
-    assert_eq!(
-        crate::state::dispatch(&["archive-catalog-worker".into(), "--teams-repair".into()])
-            .unwrap(),
-        0
-    );
+    let args: Vec<String> =
+        serde_json::from_str(&std::env::var("TEST_ARCHIVE_WORKER_ARGV").unwrap()).unwrap();
+    assert_eq!(args, ["__state", "archive-catalog-worker", "--teams-repair"]);
+    assert_eq!(crate::state::dispatch(&args[1..]).unwrap(), 0);
     fs::write(root().join("repair-exit-ok"), b"").unwrap();
 }
