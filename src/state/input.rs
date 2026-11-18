@@ -1353,6 +1353,11 @@ fn terminal_gate_on(
                 dialog: None,
             });
         }
+        // zerus-oz7cz: a pane too short for Claude's closing rule hides its
+        // composer's rows under the prompt; no paste there can be proved.
+        if sending && settle::cut(string(record, "agent"), screen, cursor_y) {
+            return Err(Gate::Other(settle::SHORT.into()));
+        }
     }
     Ok(())
 }
@@ -1934,8 +1939,9 @@ fn typing_ours(current: &Value, request_id: &str, run_id: &str) -> bool {
 
 /// Starts this send's marker term again when its window starts, after the
 /// paste (zerus-iitw8.8). The send has held the state lock since it wrote the
-/// marker, so the marker is still its own however long the paste took; the
-/// term stays one window plus slack.
+/// marker, or since it found the marker still its own after the unlocked wait
+/// before the paste (zerus-oz7cz), so the marker is still its own however
+/// long the paste took; the term stays one window plus slack.
 fn typing_from_paste(name: &str, request_id: &str, run_id: &str) -> Result<()> {
     let mut current = read(name)?;
     if string(&current, "run_id") != run_id || current[TYPING]["request_id"] != request_id {
@@ -2252,9 +2258,29 @@ fn submit_core(
         // paste taller than its view. Read it empty again right before the
         // paste. The receipt is published, so this send is then uncertain,
         // with nothing pasted and the person's text left as it is.
-        if native && !settle::empty(terminal, &claim) {
-            residue = settle::residue(terminal, &claim);
-            return Err("Claude's composer was not empty right before the paste; nothing was pasted".into());
+        // zerus-oz7cz: a frame that moves while it is read is waited for
+        // without the state lock, then read once more under it with this
+        // send's marker checked again. A refusal's evidence is its own frame.
+        if native {
+            let mut before = settle::before_paste(terminal, &claim);
+            if matches!(before, settle::Before::Moving) {
+                guard = None;
+                settle::hold_still(terminal, &claim);
+                guard = writer_until(deadline)?;
+                if guard.is_none() {
+                    return Err("the state lock stayed busy until the window ended; nothing was pasted".into());
+                }
+                let current = read(name)?;
+                if !typing_ours(&current, &request_id, string(&record, "run_id")) {
+                    return Err("the session changed right before the paste; nothing was pasted".into());
+                }
+                terminating::check_mutation(&current)?;
+                before = settle::before_paste(terminal, &claim);
+            }
+            if let Some((error, composer)) = before.refused() {
+                residue = composer.or_else(|| settle::residue(terminal, &claim));
+                return Err(error.into());
+            }
         }
         pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;

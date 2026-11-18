@@ -677,15 +677,37 @@ mod tests {
         // text, against which a composer taller than its view is proved.
         // zerus-7cq23 adds only Claude's empty-composer read right before the
         // paste; a composer found holding text fails the send as uncertain.
+        // zerus-oz7cz keeps that read's own frame as its evidence and waits
+        // for a moving frame without the lock, rechecking its marker after.
         for (retained, previous) in [
             (r#"        // zerus-7cq23: a person can type into the terminal after the gate read
         // the composer empty, and Claude keeps such text out of view above a
         // paste taller than its view. Read it empty again right before the
         // paste. The receipt is published, so this send is then uncertain,
         // with nothing pasted and the person's text left as it is.
-        if native && !settle::empty(terminal, &claim) {
-            residue = settle::residue(terminal, &claim);
-            return Err("Claude's composer was not empty right before the paste; nothing was pasted".into());
+        // zerus-oz7cz: a frame that moves while it is read is waited for
+        // without the state lock, then read once more under it with this
+        // send's marker checked again. A refusal's evidence is its own frame.
+        if native {
+            let mut before = settle::before_paste(terminal, &claim);
+            if matches!(before, settle::Before::Moving) {
+                guard = None;
+                settle::hold_still(terminal, &claim);
+                guard = writer_until(deadline)?;
+                if guard.is_none() {
+                    return Err("the state lock stayed busy until the window ended; nothing was pasted".into());
+                }
+                let current = read(name)?;
+                if !typing_ours(&current, &request_id, string(&record, "run_id")) {
+                    return Err("the session changed right before the paste; nothing was pasted".into());
+                }
+                terminating::check_mutation(&current)?;
+                before = settle::before_paste(terminal, &claim);
+            }
+            if let Some((error, composer)) = before.refused() {
+                residue = composer.or_else(|| settle::residue(terminal, &claim));
+                return Err(error.into());
+            }
         }
 "#, ""),
             ("settle::settle(terminal, &claim, &pasted, deadline)", "settle::settle(terminal, &claim, deadline)"),
