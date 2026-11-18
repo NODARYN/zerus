@@ -33,6 +33,7 @@ pub(super) fn reported(ctx: &mut Context<'_>, n: &Node, body: &str) -> Result<()
             ctx,
             n,
             "A stage gives a verdict; it does not report a result.",
+            None,
         );
     }
     ctx.db.execute("INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,?3,'active') ON CONFLICT(team,node) DO UPDATE SET generation=excluded.generation,state='active',stage=NULL",params![ctx.team.id,n.id,ctx.generation(n.id)?]).map_err(storage)?;
@@ -200,16 +201,27 @@ fn require_holder(ctx: &Context<'_>, n: &Node) -> Result<()> {
     Ok(())
 }
 pub(super) fn to_lead(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
+    to_lead_with_note(ctx, n, why, None)
+}
+pub(super) fn to_lead_with_note(
+    ctx: &mut Context<'_>,
+    n: &Node,
+    why: &str,
+    note: Option<ReportNote>,
+) -> Result<()> {
     state(ctx, n.id, "lead", None)?;
     queue::hand_back(ctx, n.id, false)?;
-    report_item(ctx, n, why)
+    report_item(ctx, n, why, note)
 }
-fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
+fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str, note: Option<ReportNote>) -> Result<()> {
     // The member's block is quoted and delimited; its notes are stored beside
     // it in their own column and never appended into its text.
-    let (text, notes) = report_row(ctx, n)?;
+    let (text, mut notes) = report_row(ctx, n)?;
+    if let Some(note) = note {
+        notes.insert(0, note);
+    }
     let mut body = quoted_report(&text);
-    if !spec(ctx, n)?.stages.is_empty() {
+    if !why.is_empty() && !spec(ctx, n)?.stages.is_empty() {
         body.push('\n');
         body.push_str(why);
         let mut end = body.len().min(16_384);
