@@ -28,13 +28,23 @@ fn original(configuration: &str, epoch: &str) -> Verified {
 }
 /// [`original`] for the session `session`.
 fn original_of(configuration: &str, epoch: &str, session: &str) -> Verified {
+    original_at(configuration, epoch, session, RUN, CONVERSATION)
+}
+/// [`original_of`] for the stopped run `run` of `conversation`.
+fn original_at(
+    configuration: &str,
+    epoch: &str,
+    session: &str,
+    run: &str,
+    conversation: &str,
+) -> Verified {
     let text = "after resume";
     let checkpoint = Checkpoint::reserve_session_resume(checkpoint::Intent {
         kind: checkpoint::Kind::ResumeToSend,
         draft_revision: 3,
         message_sha256: checkpoint::message_sha256(text, Vec::<(&str, &str, &str, &[u8])>::new()),
-        run_id: RUN.into(),
-        conversation_id: CONVERSATION.into(),
+        run_id: run.into(),
+        conversation_id: conversation.into(),
         question: None,
         start: Some(checkpoint::Start::Resume),
         retry_of: None,
@@ -42,9 +52,9 @@ fn original_of(configuration: &str, epoch: &str, session: &str) -> Verified {
     })
     .unwrap();
     let resume = json!({"request_id": checkpoint.request_id, "action": "resume",
-        "expected_run_id": RUN, "expected_conversation_id": CONVERSATION});
+        "expected_run_id": run, "expected_conversation_id": conversation});
     let stdin = json!({"request_id": checkpoint.send_request_id, "text": text, "attachments": [],
-        "expected_run_id": RUN, "expected_conversation_id": CONVERSATION});
+        "expected_run_id": run, "expected_conversation_id": conversation});
     Intent {
         scope: wire::Scope {
             configuration: configuration.into(),
@@ -955,7 +965,10 @@ mod actor {
             Self::build(None)
         }
         fn build(execute: Option<Arc<Execute>>) -> Self {
-            let temp = tempfile::tempdir().unwrap();
+            Self::build_in(tempfile::tempdir().unwrap(), execute)
+        }
+        /// [`Self::build`] in the prepared directory `temp`.
+        fn build_in(temp: tempfile::TempDir, execute: Option<Arc<Execute>>) -> Self {
             let root = temp.path().canonicalize().unwrap();
             let config = Config {
                 home: root.to_str().unwrap().into(),
@@ -2485,6 +2498,450 @@ else:
         });
         assert_eq!(super::reservation_budget::budget(&f.store.db), (0, 0, 0));
         assert_eq!(ran.counts(), (1, 0));
+    }
+
+    /// zerus-5sl7r regression through the real desktop child path: the
+    /// runtime pins a real, separately built `hgs` (`HGS_TEST_BIN`) and runs
+    /// its own `hgs session-action <session> --json` and `hgs send <session>
+    /// --json` children from that sealed memfd copy, as the service does,
+    /// against a real session of `examples/fake_agent` (as `claude`) under a
+    /// private tmux server. Before the fix the resumed pane's command named
+    /// `/memfd:… (deleted)`, the pane died, the resume still said completed
+    /// and the operation waited its whole budget without a send.
+    #[cfg(target_os = "linux")]
+    mod real_cli {
+        use super::*;
+        use std::process::Command;
+
+        /// Names the private case of the child test process.
+        const CASE: &str = "HGS_TEST_SESSION_RESUME_REAL_CASE";
+        /// Names the CLI image the child's runtime pins.
+        const PINNED: &str = "HGS_TEST_SESSION_RESUME_REAL_PINNED";
+        /// Name the tmux program and the private socket the parent owns.
+        const TMUX_PROGRAM: &str = "HGS_TEST_SESSION_RESUME_REAL_TMUX";
+        const SOCKET: &str = "HGS_TEST_SESSION_RESUME_REAL_SOCKET";
+        /// The pin's own bound on an image (`Pin::open`).
+        const PIN_BYTES: u64 = 256 << 20;
+        const PROMPT: &str = "❯ ";
+        const SENT: &str = "after resume";
+
+        fn cli() -> PathBuf {
+            std::fs::canonicalize(
+                std::env::var_os("HGS_TEST_BIN").expect("explicit separately built production CLI"),
+            )
+            .unwrap()
+        }
+        /// The CLI the runtime pins: `cli` itself, or, for a debug build
+        /// over the pin's bound, a copy without its debug sections beside it.
+        fn pinnable(cli: &Path) -> PathBuf {
+            if std::fs::metadata(cli).unwrap().len() <= PIN_BYTES {
+                return cli.to_path_buf();
+            }
+            let copy = cli.with_file_name("hgs-session-resume-pinnable");
+            let fresh = |copy: &Path| {
+                std::fs::metadata(copy).and_then(|m| m.modified()).ok()
+                    >= std::fs::metadata(cli).and_then(|m| m.modified()).ok()
+            };
+            if !fresh(&copy) {
+                let next = cli.with_file_name(format!(
+                    "hgs-session-resume-pinnable.{}",
+                    std::process::id()
+                ));
+                let status = Command::new("objcopy")
+                    .arg("--strip-debug")
+                    .arg(cli)
+                    .arg(&next)
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "objcopy --strip-debug {}", cli.display());
+                std::fs::rename(&next, &copy).unwrap();
+            }
+            assert!(std::fs::metadata(&copy).unwrap().len() <= PIN_BYTES);
+            copy
+        }
+        /// The first `name` on the parent's own PATH.
+        fn on_path(name: &str) -> PathBuf {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|dir| dir.join(name))
+                .find(|path| crate::platform::executable(path))
+                .unwrap_or_else(|| panic!("{name} is required"))
+        }
+        /// Ends the private tmux server, and every pane in it, on any exit.
+        struct Server(PathBuf, PathBuf);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                if self.1.exists() {
+                    let _ = Command::new(&self.0)
+                        .arg("-S")
+                        .arg(&self.1)
+                        .args(["-f", "/dev/null", "kill-server"])
+                        .output();
+                }
+            }
+        }
+        fn fake_agent(cli: &Path) -> PathBuf {
+            std::env::var_os("HGS_TEST_FAKE_AGENT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| cli.parent().unwrap().join("examples/fake_agent"))
+        }
+
+        /// Each case runs alone in a child test process whose environment
+        /// names only private folders, a private tmux socket and fake agents.
+        #[test]
+        #[ignore = "Explicit exact-source HGS_TEST_BIN and examples/fake_agent after cargo build; real resume and send children from the pinned image under a private tmux"]
+        fn real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends() {
+            let cli = cli();
+            assert_ne!(
+                crate::platform::file_identity(&cli),
+                crate::platform::file_identity(&std::env::current_exe().unwrap()),
+                "never run the libtest image as a CLI"
+            );
+            let agent = fake_agent(&cli);
+            assert!(
+                agent.is_file(),
+                "{} is missing; cargo build --example fake_agent",
+                agent.display()
+            );
+            let pinned = pinnable(&cli);
+            let program = on_path("tmux");
+            // A tmux socket path must stay short.
+            let base = ["/dev/shm", "/tmp"]
+                .into_iter()
+                .map(Path::new)
+                .find(|p| p.is_dir())
+                .unwrap();
+            for case in ["resume", "replaced"] {
+                let dir = tempfile::Builder::new()
+                    .prefix("hgs-rs-")
+                    .tempdir_in(base)
+                    .unwrap();
+                let tmp = dir.path().join("t");
+                std::fs::create_dir(&tmp).unwrap();
+                // Whatever happens, the private server and its panes end.
+                let server = Server(program.clone(), dir.path().join("tmux.sock"));
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "desktop::session_resume::tests::actor::real_cli::private_case",
+                        "--ignored",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env_clear();
+                for (key, value) in std::env::vars_os() {
+                    let text = key.to_string_lossy();
+                    if !["HGS_", "TMUX", "FAKE_AGENT_", "CLAUDE_", "CODEX_", "KIMI_"]
+                        .iter()
+                        .any(|prefix| text.starts_with(prefix))
+                    {
+                        command.env(key, value);
+                    }
+                }
+                let output = command
+                    .env(CASE, case)
+                    .env("TMPDIR", &tmp)
+                    .env("HGS_TEST_BIN", &cli)
+                    .env(PINNED, &pinned)
+                    .env(TMUX_PROGRAM, &server.0)
+                    .env(SOCKET, &server.1)
+                    .env("HGS_TEST_FAKE_AGENT", &agent)
+                    .output()
+                    .unwrap();
+                drop(server);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                println!("case {case}:\n{stdout}");
+                assert!(
+                    output.status.success()
+                        && stdout.contains(&format!("SESSION_RESUME_REAL_EXECUTED={case}")),
+                    "{case}:\n{stdout}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+
+        fn hgs(args: &[&str]) -> std::process::Output {
+            let output = Command::new(cli())
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "hgs {args:?}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output
+        }
+        fn tmux(args: &[&str]) -> std::process::Output {
+            Command::new("tmux").args(args).output().unwrap()
+        }
+        /// The session's current record, wherever its layout keeps it.
+        fn record_of(state: &Path, name: &str) -> Value {
+            let folders = [
+                state.to_path_buf(),
+                state.join("bindings"),
+                state.join("sessions"),
+            ];
+            folders
+                .iter()
+                .filter_map(|folder| folder.read_dir().ok())
+                .flatten()
+                .flatten()
+                .filter(|entry| entry.path().extension().is_some_and(|e| e == "json"))
+                .filter_map(|entry| std::fs::read(entry.path()).ok())
+                .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .find(|record| record["name"] == name && record.get("rename_shadow").is_none())
+                .unwrap_or(Value::Null)
+        }
+        fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+            let until = Instant::now() + Duration::from_secs(60);
+            while !done() {
+                assert!(Instant::now() < until, "timed out: {what}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        #[test]
+        #[ignore = "Run only by real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends in its private environment"]
+        fn private_case() {
+            let case = std::env::var(CASE).expect("run only by its parent test");
+            let cli = cli();
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let bin = root.join(".local/bin");
+            let project = root.join("project");
+            let folders = [&bin, &project, &root.join("tmux")];
+            for folder in folders {
+                std::fs::create_dir_all(folder).unwrap();
+            }
+            mode(&root.join("tmux"), 0o700);
+            let script = |name: &str, text: String| {
+                std::fs::write(bin.join(name), text).unwrap();
+                mode(&bin.join(name), 0o755);
+            };
+            // Only the parent's private socket, never the person's server.
+            let server = Server(
+                std::env::var_os(TMUX_PROGRAM)
+                    .expect("set by the parent")
+                    .into(),
+                std::env::var_os(SOCKET).expect("set by the parent").into(),
+            );
+            script(
+                "tmux",
+                format!(
+                    "#!/bin/sh\nexec {} -S {} -f /dev/null \"$@\"\n",
+                    server.0.display(),
+                    server.1.display()
+                ),
+            );
+            script(
+                "shell",
+                "#!/bin/sh\nshift\ncommand=$1; shift\ncase $command in exec\\ *) ;; *) command=\"exec $command\" ;; esac\nexec /bin/sh -c \"$command\" \"$@\"\n".into(),
+            );
+            std::os::unix::fs::symlink(fake_agent(&cli), bin.join("claude")).unwrap();
+            // Single-threaded: nothing else runs in this process yet.
+            for (key, value) in [
+                ("HOME", root.display().to_string()),
+                ("HGS_CONFIG_DIR", root.join("config").display().to_string()),
+                ("HGS_STATE_DIR", root.join("state").display().to_string()),
+                ("HGS_SELF", "test".into()),
+                ("HGS_PEERS", String::new()),
+                ("HGS_TAB", "0".into()),
+                ("TERM", "xterm-256color".into()),
+                ("TMUX_TMPDIR", root.join("tmux").display().to_string()),
+                ("SHELL", bin.join("shell").display().to_string()),
+                (
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                ),
+                (
+                    "FAKE_AGENT_RECORD",
+                    root.join("agents.jsonl").display().to_string(),
+                ),
+                (
+                    "FAKE_AGENT_READY",
+                    root.join("ready.json").display().to_string(),
+                ),
+                (
+                    "FAKE_AGENT_CONTROL",
+                    root.join("control").display().to_string(),
+                ),
+                (
+                    "FAKE_AGENT_TRANSCRIPT_DIR",
+                    root.join("history").display().to_string(),
+                ),
+                ("FAKE_AGENT_PROMPT", PROMPT.into()),
+                // The paste shows in the composer, as Claude shows it: the
+                // send presses Enter only once it is settled there, in
+                // Claude's frame closed by its rule (zerus-7cq23).
+                ("FAKE_AGENT_ECHO", "1".into()),
+                ("FAKE_AGENT_CLAUDE_FRAME", "1".into()),
+                ("FAKE_AGENT_PROBE_TEXT", "2.1.296 (Claude Code)".into()),
+            ] {
+                std::env::set_var(key, value);
+            }
+            // The image the runtime pins: the CLI itself, or a copy that an
+            // update replaces before the resume.
+            let image = PathBuf::from(std::env::var_os(PINNED).expect("set by the parent test"));
+            let pinned = if case == "replaced" {
+                let copy = root.join("installed/hgs");
+                std::fs::create_dir(copy.parent().unwrap()).unwrap();
+                std::fs::copy(&image, &copy).unwrap();
+                mode(&copy, 0o755);
+                copy
+            } else {
+                image
+            };
+            let mut f = Fixture::build_in(temp, None);
+            assert_eq!(f.state, root.join("state"));
+            // The fixture's synthetic stopped session is not this test's.
+            std::fs::remove_file(f.state.join(format!(
+                "{:x}.json",
+                <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
+            )))
+            .unwrap();
+            f.runtime.fixture_image(&pinned);
+
+            // A real session, started and paused by the real CLI.
+            let name = "claude/project/resumed";
+            hgs(&[
+                "claude",
+                project.to_str().unwrap(),
+                "--new",
+                "-n",
+                "resumed",
+                "-d",
+            ]);
+            wait_for("the started session to be idle", || {
+                let record = record_of(&f.state, name);
+                record["activity"] == "idle"
+                    && record["conversation_id"]
+                        .as_str()
+                        .is_some_and(|c| !c.is_empty())
+            });
+            // This private server outlives its last session to keep its options.
+            tmux(&["set-option", "-g", "exit-empty", "off"]);
+            hgs(&["pause", name]);
+            wait_for("the paused terminal to end", || {
+                !tmux(&["has-session", "-t", &format!("={name}")])
+                    .status
+                    .success()
+            });
+            let stopped = record_of(&f.state, name);
+            let (run, conversation) = (
+                stopped["run_id"].as_str().unwrap().to_owned(),
+                stopped["conversation_id"].as_str().unwrap().to_owned(),
+            );
+            // Keep a dying pane readable on this private server only.
+            assert!(tmux(&["set-option", "-gw", "remain-on-exit", "on"])
+                .status
+                .success());
+            if case == "replaced" {
+                // An update replaces the installed file under the pin.
+                let next = root.join("installed/hgs.next");
+                std::fs::write(&next, b"#!/bin/sh\nexit 0\n").unwrap();
+                mode(&next, 0o755);
+                std::fs::rename(&next, &pinned).unwrap();
+            }
+
+            let original = original_at(
+                &f.location.configuration,
+                &f.epoch,
+                name,
+                &run,
+                &conversation,
+            );
+            assert!(f.admit(&original).accepted);
+            let admitted = Instant::now();
+            f.until("the operation to settle", |f| {
+                f.row(&original).receipt.drained
+            });
+            let receipt = f.row(&original).receipt;
+            let panes = String::from_utf8_lossy(
+                &tmux(&[
+                    "list-panes",
+                    "-a",
+                    "-F",
+                    "#{session_name}\t#{pane_dead}\t#{pane_start_command}",
+                ])
+                .stdout,
+            )
+            .into_owned();
+            let agents = std::fs::read_to_string(root.join("agents.jsonl")).unwrap_or_default();
+            println!("receipt: {}", serde_json::to_string(&receipt).unwrap());
+            println!("settled after {:?}", admitted.elapsed());
+            println!("panes:\n{panes}");
+            assert!(!panes.contains("memfd"), "{panes}");
+            match case.as_str() {
+                "resume" => {
+                    assert_eq!(
+                        (
+                            receipt.resume.step,
+                            receipt.send.step,
+                            receipt.code.as_str()
+                        ),
+                        (Step::Recorded, Step::Recorded, ""),
+                        "{panes}\n{agents}"
+                    );
+                    let resumed = receipt
+                        .resume
+                        .outcome
+                        .as_ref()
+                        .unwrap()
+                        .result_target
+                        .run_id
+                        .clone();
+                    assert_ne!(resumed, run);
+                    let record = record_of(&f.state, name);
+                    assert_eq!(record["run_id"], resumed.as_str());
+                    // The resumed run's supervisor runs the pin's own installed file.
+                    assert_eq!(record["hgs"], pinned.to_str().unwrap());
+                    assert!(
+                        panes
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{name}\t0\t"))
+                                && line.contains(pinned.to_str().unwrap())),
+                        "{panes}"
+                    );
+                    // The resumed agent received the person's text.
+                    let typed = agents
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                        .filter_map(|event| {
+                            event["hex"].as_str().and_then(|hex| {
+                                (0..hex.len())
+                                    .step_by(2)
+                                    .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+                                    .collect::<Option<Vec<u8>>>()
+                            })
+                        })
+                        .flatten()
+                        .collect::<Vec<u8>>();
+                    assert!(String::from_utf8_lossy(&typed).contains(SENT), "{agents}");
+                }
+                "replaced" => {
+                    // The pin no longer matches its installed file: no child
+                    // starts, nothing runs, and the row settles at once.
+                    assert_eq!(
+                        (receipt.resume.step, receipt.send.step),
+                        (Step::NotStarted, Step::NotStarted),
+                        "{panes}"
+                    );
+                    assert!(
+                        !panes
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{name}\t"))),
+                        "{panes}"
+                    );
+                    assert_eq!(record_of(&f.state, name)["run_id"], run.as_str());
+                }
+                other => panic!("unknown case {other}"),
+            }
+            drop(server);
+            println!("SESSION_RESUME_REAL_EXECUTED={case}");
+        }
     }
 }
 /// Reservation accounting controls use only synthetic originals and private Store fixtures.
