@@ -80,6 +80,13 @@ export function waitingNote(note: ServiceNote): string {
   switch (note.code) {
     case "text_shortened": return tr("The report text was shortened.");
     case "worktree_dirty": return tr("The member's worktree had uncommitted changes.");
+    case "lead_member_added": {
+      const values = note.parameters;
+      if (values?.length === 3) {
+        return tr("The lead added member %1 (%2) to staff the %3 role.", values[0], values[1], values[2]);
+      }
+      return note.text || note.code;
+    }
     default: return providerStopNote(note) ?? (note.text || note.code);
   }
 }

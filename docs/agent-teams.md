@@ -686,7 +686,9 @@ A proven non-delivery does not open a `delivery_uncertain` inbox item. The
 service also reconciles such effects recorded by older versions and closes
 only the false item bound to their original outcome receipt, including after
 manual recovery. A genuine unknown delivery stays open. A refused reopen
-still hands the task back to the lead, with its own reason and hold.
+hands the task back to the lead with a notice that explains the refusal.
+The service closes that notice after the lead releases the hand-back or
+newer work supersedes it, including for tasks recovered on older versions.
 
 ## Project limits
 
