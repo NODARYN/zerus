@@ -5,7 +5,7 @@ import { tr } from "../../i18n";
 import { TextInput } from "../lib/TextField";
 import type { DrawerRow } from "../../store/teamDrawers";
 import { isProviderStopNote, waitingNote } from "./decisions";
-import { reportRows } from "./feed";
+import { actorLabel, itemState, reportRows } from "./feed";
 
 export type DrawerAction = (kind: string, fields: Record<string, unknown>) => void;
 
@@ -32,7 +32,7 @@ export function Report(props: { row: DrawerRow; busy: boolean; onAction: DrawerA
   const [reason, setReason] = createSignal("");
   const actionable = () => props.row.state === "open" && props.row.node !== null;
   return <article class="team-report" data-report={props.row.seq}>
-    <header><b>{tr("Task %1", props.row.node ?? "")}</b><span class="dim">{props.row.by}</span><span class="dim">{props.row.state}</span></header>
+    <header><b>{tr("Task %1", props.row.node ?? "")}</b><span class="dim">{actorLabel(props.row)}</span><span class="dim">{itemState(props.row.state)}</span></header>
     <InboxText row={props.row} />
     <Show when={actionable()}>
       <div class="team-drawer-actions">
