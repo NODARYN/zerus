@@ -380,10 +380,13 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
           <TextInput class="field mono" aria-label={tr("Project folder")} value={folder()} disabled={locked()} onInput={(event) => { setFolder(event.currentTarget.value); setFacts(undefined); }} historyKey="team-folder" />
           <button type="button" class="btn" data-check-folder disabled={checking() || locked() || !folder().trim()} onClick={() => void check()}>{tr("Check folder")}</button>
         </div>
+        {/* The newest answer decides the line: a check of the same path again
+            replaces it, also from refused to passed and back (G11). */}
         <Show when={checkedFolder()}>
-          {(checked) => checked().git
-            ? <span class="nt-ok" role="status" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
-            : <span class="nt-foot-bad" role="status" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}
+          {(checked) => <Show when={checked().git}
+            fallback={<span class="nt-foot-bad" role="status" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}>
+            <span class="nt-ok" role="status" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
+          </Show>}
         </Show>
         <label class="nt-field">{tr("Integration branch")}
           <TextInput class="field mono" value={proposed()} onInput={(event) => setBranch(event.currentTarget.value)}
