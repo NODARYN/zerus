@@ -675,7 +675,19 @@ mod tests {
         // unlocked settle. The actual-CLI interleaving test pins its behavior.
         // zerus-33caz hands the settle and its Enter fence the exact pasted
         // text, against which a composer taller than its view is proved.
+        // zerus-7cq23 adds only Claude's empty-composer read right before the
+        // paste; a composer found holding text fails the send as uncertain.
         for (retained, previous) in [
+            (r#"        // zerus-7cq23: a person can type into the terminal after the gate read
+        // the composer empty, and Claude keeps such text out of view above a
+        // paste taller than its view. Read it empty again right before the
+        // paste. The receipt is published, so this send is then uncertain,
+        // with nothing pasted and the person's text left as it is.
+        if native && !settle::empty(terminal, &claim) {
+            residue = settle::residue(terminal, &claim);
+            return Err("Claude's composer was not empty right before the paste; nothing was pasted".into());
+        }
+"#, ""),
             ("settle::settle(terminal, &claim, &pasted, deadline)", "settle::settle(terminal, &claim, deadline)"),
             ("settle::still(terminal, &claim, &pasted, &shown)", "settle::still(terminal, &claim, &shown)"),
             ("                let current = read(name)?;\n                if !typing_ours(&current, &request_id, string(&record, \"run_id\")) {", "                if !typing_ours(&read(name)?, &request_id, string(&record, \"run_id\")) {"),

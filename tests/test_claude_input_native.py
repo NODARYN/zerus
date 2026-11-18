@@ -1,5 +1,6 @@
 """Exact message acceptance by real Claude using a private home and localhost API."""
 import re
+import sys
 import time
 import unittest
 import json
@@ -205,3 +206,68 @@ class NativeClaudeTallInput(NativeClaudeInput):
             self.assert_confirmed(self.payload(text=TALL), ('transcript', 'queue'))
         finally:
             (self.root / 'turn-release').touch()
+
+    def test_a_draft_typed_after_the_send_gate_is_never_submitted_with_the_message(self):
+        # zerus-7cq23: a person types `x` into Claude's composer right after
+        # the send gate read it empty (the fixture's tmux types it once hgs has
+        # staged its buffer, after the cursor read that ends the gate's frame).
+        # Claude keeps the draft out of view above `↑ 3 more`: the same rows,
+        # the same count and the same cursor as this message alone.
+        self.script('tmux', DRAFT_TMUX % dict(python=sys.executable, root=str(self.root), tmux=fixtures.TMUX,
+                                              socket=str(self.socket)))
+        self.ask(LONG)
+        self.wait_for(lambda: self.replied() and re.search(r'^❯\s*$', self.screen(), re.M))
+        requests = len(self.native_requests)
+        (self.root / 'draft-armed').touch()
+        payload = self.payload(text=TALL)
+        error = self.send(payload, success=False)
+        calls = (self.root / 'tmux-calls.log').read_text()
+        self.assertEqual(json.loads((self.root / 'draft-state.json').read_text())['step'], 'injected', calls)
+        # Never Enter on the draft and the message together, nor on the message.
+        self.assertEqual(self.accepted('x' + TALL), 0, error)
+        self.assertEqual(self.accepted(TALL), 0, error)
+        self.assertNotIn('paste-buffer', calls, error)
+        self.assertIn('nothing was pasted', error)
+        self.assertIn('the composer holds: x', error)
+        # The person's draft stays as typed, and nothing reached the model.
+        self.assertRegex(self.screen(), r'(?m)^❯\s*x\s*$')
+        self.assertEqual(len(self.native_requests), requests)
+        # Never replayed: the same request pastes nothing.
+        self.send(payload, success=False)
+        self.assertNotIn('paste-buffer', (self.root / 'tmux-calls.log').read_text())
+        self.assertRegex(self.screen(), r'(?m)^❯\s*x\s*$')
+
+
+# zerus-7cq23: the fixture's tmux for a person's draft typed between the send
+# gate's last read and the paste. Armed by root/'draft-armed', it waits for hgs
+# to stage its buffer (load-buffer), then for the gate's composer capture and
+# the cursor read after it, types `x` once Claude shows it, and logs each call.
+DRAFT_TMUX = r'''#!%(python)s
+import json, subprocess, sys, time
+from pathlib import Path
+root = Path(%(root)r)
+real = [%(tmux)r, '-S', %(socket)r, '-f', '/dev/null']
+args = sys.argv[1:]
+status = subprocess.run(real + args).returncode
+if (root / 'draft-armed').exists():
+    path = root / 'draft-state.json'
+    state = json.loads(path.read_text()) if path.exists() else dict(step='armed')
+    command = args[0] if args else ''
+    if state['step'] == 'armed' and command == 'load-buffer':
+        state['step'] = 'staged'
+    elif state['step'] == 'staged' and command == 'capture-pane' and '-e' in args:
+        state['step'] = 'captured'
+    elif state['step'] == 'captured' and command == 'display-message' and any('#{cursor_x}' in arg for arg in args):
+        pane = args[args.index('-t') + 1]
+        subprocess.run(real + ['send-keys', '-t', pane, '-l', 'x'])
+        for _ in range(500):
+            screen = subprocess.run(real + ['capture-pane', '-p', '-t', pane], capture_output=True, text=True).stdout
+            if any(row[:1] == '❯' and row[1:].strip() == 'x' for row in screen.splitlines()):
+                break
+            time.sleep(.01)
+        state['step'] = 'injected'
+    path.write_text(json.dumps(state))
+    with open(root / 'tmux-calls.log', 'a') as log:
+        log.write(' '.join(args[:2]) + '\n')
+sys.exit(status)
+'''
