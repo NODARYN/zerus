@@ -35,8 +35,8 @@ export function roleLabel(role: string): string {
   }
 }
 
-export function RoleChip(props: { role: string; lead?: boolean }) {
-  return <span class="role-badge" classList={{ "team-member-lead": props.lead }} style={roleStyle(props.role, props.lead)} title={props.role}><Icon name={roleIcon(props.role, props.lead)} size={11} /><span>{roleLabel(props.role)}</span></span>;
+export function RoleChip(props: { role: string; lead?: boolean; title?: string }) {
+  return <span class="role-badge" classList={{ "team-member-lead": props.lead }} style={roleStyle(props.role, props.lead)} title={props.title ?? props.role}><Icon name={roleIcon(props.role, props.lead)} size={11} /><span>{roleLabel(props.role)}</span></span>;
 }
 export function TeamAgent(props: { agent: string }) {
   return <span class="team-agent" aria-label={props.agent}><AgentTile agent={agentKind(props.agent)} size={20} /></span>;

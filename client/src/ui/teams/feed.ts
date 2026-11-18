@@ -129,6 +129,39 @@ export function journalSentence(kind: string): string {
     case "reconcile_publication": return tr("Phase publication checked");
     case "publication_task_problem": return tr("Phase task problem recorded");
     case "reconcile_phase": return tr("Phase state checked");
+    // Kinds a writer sets in place of its operation (`ctx.event`).
+    case "person_override": return tr("You changed the task outside the team");
+    case "accepted_superseded": return tr("Your own run replaced the accepted result");
+    case "stale_card_decision": return tr("Decision on an outdated card");
     default: return kind.replaceAll("_", " ");
   }
+}
+
+/** A hand-out result's word as the journal writes it (ops/journal.rs). */
+function handoutOutcome(word: string): string | undefined {
+  switch (word) {
+    case "submitted": return tr("Submitted");
+    case "refused": return tr("Refused");
+    case "uncertain": return tr("Outcome unknown");
+    case "cutting over": return tr("Moving to another session");
+    case "handed back": return tr("Handed back");
+    default: return undefined;
+  }
+}
+
+/** What a journal row's text says beyond its sentence, shown as visible text
+ * (zerus-rzvct G6 review): the outcome and reason of a hand-out, a superseded
+ * decision, or a sentence the service wrote. The generic "<kind> at revision
+ * N" says nothing more and gives "". The exact text stays the row's title. */
+export function journalDetail(row: Pick<DrawerRow, "kind" | "text">): string {
+  const generic = new RegExp(`^${row.kind.replace(/[^a-z_]/g, "")} at revision \\d+`);
+  const matched = row.text.match(generic);
+  if (!matched) return row.text;
+  const rest = row.text.slice(matched[0].length).replace(/^[:;]\s*/, "");
+  if (row.kind === "handout_outcome" && rest) {
+    const [word, ...reason] = rest.split(": ");
+    const translated = handoutOutcome(word);
+    if (translated) return [translated, ...reason].join(": ");
+  }
+  return rest;
 }

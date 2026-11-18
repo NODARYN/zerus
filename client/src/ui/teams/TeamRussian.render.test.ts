@@ -52,11 +52,14 @@ it("translates the drawer rows' state and actor", () => {
   host = mount(() => createComponent(drawers.TeamFeed, { rows: feed.rows }));
   expect(host.querySelector('[data-feed-seq="1"] [data-feed-actor]')?.textContent).toBe("Вы");
   expect(host.querySelector('[data-feed-seq="1"] [data-feed-sentence]')?.textContent).toBe("Команда создана");
+  expect(host.querySelector('[data-feed-seq="9"] [data-feed-detail]')?.textContent).toBe("Отправлено");
   expect(cards.rows[0].by).toBe("local");
 });
 
 it("calls the team's lead «лид» in every Teams string", () => {
   const lead = Object.entries(catalog).filter(([source]) => /\blead\b/i.test(source));
   expect(lead.length).toBeGreaterThan(20);
-  expect(lead.filter(([, value]) => JSON.stringify(value).toLowerCase().includes("руководител")).map(([source]) => source)).toEqual([]);
+  expect(lead.filter(([, value]) => /руководител|координатор/.test(JSON.stringify(value).toLowerCase())).map(([source]) => source)).toEqual([]);
+  // The review a stage gives is «ревью», as on the stage chip.
+  expect(catalog["Member %1 (%2) %3 during stage #%4 for task #%5. The review returned to the lead. Review the changes or choose the next action."]).toContain("Ревью возвращено лиду");
 });

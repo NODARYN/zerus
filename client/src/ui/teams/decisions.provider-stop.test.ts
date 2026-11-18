@@ -12,7 +12,7 @@ it("localizes the provider stop for stage 21 without displaying the English fall
     code: "provider_stop_quota",
     parameters: ["m3", "Kimi", "20", "21"],
     text: "English fallback",
-  })).toBe("На этапе №21 задачи №20 участник m3 (Kimi) достиг лимита использования. Проверка возвращена лиду. Просмотрите изменения или выберите следующее действие.");
+  })).toBe("На этапе №21 задачи №20 участник m3 (Kimi) достиг лимита использования. Ревью возвращено лиду. Просмотрите изменения или выберите следующее действие.");
 });
 
 it("names the stop and task for a standalone hand-back", () => {

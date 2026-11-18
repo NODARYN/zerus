@@ -7,7 +7,7 @@ import { RecordedPageExport, exportRecordedPage, type PageExportPort } from "../
 import { Icon } from "../lib/icons";
 import { TextInput } from "../lib/TextField";
 import { TeamDrawerRead, readTeamDrawer, type DrawerKind, type DrawerRow, type TeamDrawer, type DrawerPort } from "../../store/teamDrawers";
-import { actorLabel, feedClock, historyLine, inboxKind, itemState, journalSentence } from "./feed";
+import { actorLabel, feedClock, historyLine, inboxKind, itemState, journalDetail, journalSentence } from "./feed";
 import { InboxText, Report, TeamReports, type DrawerAction } from "./TeamReports";
 import { ProposalCards } from "./ProposalCards";
 import type { TeamView } from "./types";
@@ -38,6 +38,7 @@ export function TeamFeed(props: { rows: DrawerRow[] }) {
           <Show when={row.subject_node}>{(node) => <span class="team-pill" data-feed-task>#{node()}</span>}</Show>
           <Show when={row.subject_member}>{(member) => <span class="team-pill" data-feed-member>{member()}</span>}</Show>
         </header>
+        <Show when={journalDetail(row)}>{(detail) => <p class="team-drawer-text" data-feed-detail>{detail()}</p>}</Show>
         <Show when={row.text_truncated}><span class="dim">{tr("Only the beginning of this text is shown.")}</span></Show>
       </article>
     }</For>

@@ -9,4 +9,8 @@
   .team-member-name.team-member-link { font-size: var(--fs-xs); font-weight: 400; color: var(--z-color-accent); }
   .team-member-line > .role-badge { flex: 0 1 auto; min-width: 2.5em; }
   .team-member-line > .team-member-name { flex: none; max-width: 40%; }
+  /* A member whose ID equals its role: its role chip is the link. */
+  .team-member-line > .team-member-name.team-member-chip-link { display: inline-flex; flex: 0 1 auto; max-width: none; min-width: 2.5em; }
+  .team-member-chip-link > .role-badge { min-width: 0; }
+  .team-member-chip-link:hover > .role-badge, .team-member-chip-link:focus-visible > .role-badge { text-decoration: underline; }
 }

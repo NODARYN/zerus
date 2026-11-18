@@ -45,7 +45,13 @@ export function MemberCard(props: { member: MemberView; teamStatus: string; card
     <TeamAgent agent={props.member.agent} />
     <div class="team-member-content">
       <div class="team-member-line">
-        <RoleChip role={props.member.role || props.member.id} lead={props.member.lead} />
+        {/* A member whose ID equals its role shows only its role chip: that
+            chip is its displayed name, so it opens the session too. */}
+        <Show when={props.member.id === props.member.role && session().row} fallback={<RoleChip role={props.member.role || props.member.id} lead={props.member.lead} />}>
+          <button type="button" class="team-member-name team-member-link team-member-chip-link" title={tr("Open this member's session")} onClick={openSession}>
+            <RoleChip role={props.member.role || props.member.id} lead={props.member.lead} title={tr("Open this member's session")} />
+          </button>
+        </Show>
         <Show when={props.member.id !== props.member.role}>
           <Show when={session().row} fallback={<b class="team-member-name ell" title={props.member.id}>{props.member.id}</b>}>
             <button type="button" class="team-member-name team-member-link ell" title={tr("Open this member's session")} onClick={openSession}>{props.member.id}</button>

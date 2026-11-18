@@ -1,7 +1,7 @@
 import { batch } from "solid-js";
 import { tr } from "../../i18n";
 import { orderedRows } from "../../store/catalog";
-import { setDetailTab, setPage, setSelectedKey } from "../../store/ui";
+import { setDetailTab, setPage, setSelectedKey, setSubagentOpen } from "../../store/ui";
 import type { Session } from "../sessions/types";
 import { rowSessionKeys, sessionKey } from "./session-binding";
 import type { MemberView } from "./types";
@@ -30,7 +30,10 @@ export function memberSessions(members: readonly Pick<MemberView, "id" | "sessio
   }));
 }
 
-/** Opens the member's session on its Activity, as a session request does. */
+/** Opens the member's own session on its Activity, as a session request
+ * does. A native child selected under the previous session is cleared in the
+ * same step, as ordinary session navigation does (store/desk.ts): it belongs
+ * to that session, never to the member's. */
 export function openMemberSession(row: Session) {
-  batch(() => { setPage("sessions"); setSelectedKey(row.key); setDetailTab("activity"); });
+  batch(() => { setPage("sessions"); setSubagentOpen(undefined); setSelectedKey(row.key); setDetailTab("activity"); });
 }
