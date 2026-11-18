@@ -19,6 +19,17 @@ pub(super) struct Hold {
 }
 
 impl Runtime {
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    pub(in crate::desktop::teams) fn test_hold_scoped(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        hold: (&str, u64, u32, Option<&str>),
+        observed: (&str, i64),
+    ) -> Result<()> {
+        self.for_row(|actor| actor.hold_scoped(store, team, hold, observed, || {}))
+    }
+
     pub(in crate::desktop::teams::actor) fn held_step(
         &mut self,
         store: &mut Store,
@@ -62,20 +73,18 @@ impl Runtime {
         let (reason, now) = observed;
         let name = format!("gate:{key}");
         let mut row = self.ledger.get(&team.id, &name)?;
-        if row
-            .as_ref()
-            .is_some_and(|r| {
-                held_by(r).is_none_or(|(d, g, b)| {
-                    (d, g) != (decision, generation)
-                        || binding.is_some_and(|binding| b.as_deref() != Some(binding))
-                })
-            })
-        {
-            let close_reason = if binding.is_some() {
-                "The member's session binding changed"
-            } else {
-                RECOVERED_REASON
-            };
+        let close_reason = row.as_ref().and_then(|row| match held_by(row) {
+            // Unscoped legacy rows could store a reason in the third field.
+            Some((_, _, previous)) if binding.is_some() && previous.as_deref() != binding => {
+                Some("The member's session binding changed")
+            }
+            Some((d, g, _)) if (d, g) != (decision, generation) => {
+                Some("The decision or generation for this check changed")
+            }
+            Some(_) => None,
+            None => Some("The previous hold could not be verified"),
+        });
+        if let Some(close_reason) = close_reason {
             self.close_gate(store, team, key, close_reason, now)?;
             row = self.ledger.get(&team.id, &name)?;
             if row.is_some() {

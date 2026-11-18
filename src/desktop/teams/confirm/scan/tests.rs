@@ -18,17 +18,60 @@ fn a_changed_unreadable_binding_closes_the_old_card_and_starts_a_new_hold() {
     let mut changed = binding.clone();
     changed.run = "a-different-run".into();
     let mut cards = actor::Runtime::open(state, &team.home).unwrap();
-    let mut observe = |store: &mut Store, binding: &Binding, now| {
-        apply_observation(
-            &mut cards,
-            store,
-            (&team, &member, binding),
-            &Err("The member inspection is unavailable".into()),
-            now,
-            |_| {},
-        )
-        .unwrap();
-    };
+    assert_unreadable_hold_replacement(
+        &mut h.store,
+        &binding,
+        &changed,
+        |store, binding, now| {
+            apply_observation(
+                &mut cards,
+                store,
+                (&team, &member, binding),
+                &Err("The member inspection is unavailable".into()),
+                now,
+                |_| {},
+            )
+            .unwrap();
+        },
+        "The member's session binding changed",
+    );
+}
+
+#[test]
+fn a_same_binding_generation_change_closes_the_old_card_and_starts_a_new_hold() {
+    let mut h = crate::desktop::teams::tests::bound151_fixture();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let mut cards = actor::Runtime::open(h.temp.path(), &team.home).unwrap();
+    assert_unreadable_hold_replacement(
+        &mut h.store,
+        1,
+        2,
+        |store, generation, now| {
+            cards
+                .test_hold_scoped(
+                    store,
+                    &team,
+                    (
+                        "unreadable_confirmation:m1",
+                        0,
+                        generation,
+                        Some("same-binding"),
+                    ),
+                    ("The member inspection is unavailable", now),
+                )
+                .unwrap();
+        },
+        "The decision or generation for this check changed",
+    );
+}
+
+fn assert_unreadable_hold_replacement<T: Copy>(
+    store: &mut Store,
+    original: T,
+    replacement: T,
+    mut observe: impl FnMut(&mut Store, T, i64),
+    expected: &str,
+) {
     let open = |store: &Store| {
         store
             .cards(TEAM, 200, None)
@@ -40,25 +83,32 @@ fn a_changed_unreadable_binding_closes_the_old_card_and_starts_a_new_hold() {
             .collect::<Vec<_>>()
     };
     let start = 1_000_000;
-    observe(&mut h.store, &binding, start);
-    observe(&mut h.store, &binding, start + 180_000);
-    let first = open(&h.store);
+    observe(store, original, start);
+    observe(store, original, start + 180_000);
+    let first = open(store);
     assert_eq!(first.len(), 1);
     let rebound = start + 181_000;
-    observe(&mut h.store, &changed, rebound);
-    assert!(open(&h.store).is_empty());
-    let journal = h.store.journal(TEAM, 200, None).unwrap().rows;
-    let note = journal
-        .iter()
-        .find(|row| row.kind == "close_card" && row.refs.contains(&format!("card:{}", first[0])))
-        .unwrap();
-    assert_eq!(note.text, "The member's session binding changed");
-    observe(&mut h.store, &changed, rebound + 179_999);
-    assert!(open(&h.store).is_empty());
-    observe(&mut h.store, &changed, rebound + 180_000);
-    let next = open(&h.store);
+    observe(store, replacement, rebound);
+    assert!(open(store).is_empty());
+    assert_eq!(close_note(store, first[0]), expected);
+    observe(store, replacement, rebound + 179_999);
+    assert!(open(store).is_empty());
+    observe(store, replacement, rebound + 180_000);
+    let next = open(store);
     assert_eq!(next.len(), 1);
     assert_ne!(next[0], first[0]);
+}
+
+fn close_note(store: &Store, card: u64) -> String {
+    let reference = format!("card:{card}");
+    store
+        .journal(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|row| row.kind == "close_card" && row.refs.contains(&reference))
+        .unwrap()
+        .text
 }
 
 #[test]
@@ -183,6 +233,10 @@ fn unknown_fixture() {
         assert_eq!(
             h.store.card(TEAM, first[0].seq).unwrap().unwrap().state,
             "closed"
+        );
+        assert_eq!(
+            close_note(&h.store, first[0].seq),
+            "The service check recovered"
         );
         let ledger = actor::Ledger::open(&state).unwrap();
         assert!(ledger
