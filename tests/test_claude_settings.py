@@ -331,6 +331,30 @@ class ClaudeSettings(unittest.TestCase):
         info = self.inspect()
         self.assertEqual((info['pending_model'], info['pending_effort']), ('claude-haiku-5-5', 'xhigh'))
 
+    def test_pending_choice_types_nothing_into_a_pane_too_short_for_the_composer(self):
+        # zerus-szz00: a choice saved while Claude works applies before the
+        # next message. In a pane whose last row is Claude's prompt, with its
+        # closing rule cut off, the send gate refuses before any settings key.
+        self.record.update(activity='busy', phase='working'); self.write_record()
+        self.settings(self.payload('claude-haiku-5-5', 'xhigh'))
+        self.record = json.loads(self.record_path.read_text())
+        self.record.update(activity='idle', phase='idle'); self.write_record()
+        indicator = '◐ medium · /effort'
+        (self.root / 'screen').write_text('\x1b[2J\x1b[28;1H' + ' ' * (99 - len(indicator)) + indicator
+                                          + '\r\n' + '─' * 100 + '\r\n❯ ')
+        os.kill(self.record['pid'], signal.SIGUSR1)
+        self.wait_for(lambda: self.tmux('capture-pane', '-p', '-t', self.pane).rstrip('\n').split('\n')[-1].strip() == '❯')
+        message = dict(request_id=str(uuid.uuid4()), expected_run_id=self.run_id,
+                       expected_conversation_id=self.conversation_id, text='continue')
+        result = subprocess.run([str(test_input.HGS), 'send', self.name, '--json'], env=self.env,
+                                input=json.dumps(message), text=True, capture_output=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("Claude's pane is too short to show its whole composer; nothing was sent", result.stderr)
+        self.assertEqual(self.received(), b'')
+        info = self.inspect()
+        self.assertEqual((info['pending_model'], info['pending_effort']), ('claude-haiku-5-5', 'xhigh'))
+        self.assertDefaultsUntouched()
+
 
 class ClaudeSettings327(ClaudeSettings):
     """The same contract against the reworded picker of Claude Code 2.1.327."""

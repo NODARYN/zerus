@@ -679,7 +679,14 @@ mod tests {
         // paste; a composer found holding text fails the send as uncertain.
         // zerus-oz7cz keeps that read's own frame as its evidence and waits
         // for a moving frame without the lock, rechecking its marker after.
+        // zerus-szz00 adds only Claude's send gate before pending settings.
         for (retained, previous) in [
+            (r#"    // zerus-szz00: Claude's send gate, its short-pane refusal included, comes
+    // before any pending settings key too; the gate after them stays.
+    if effort::pending_applies(&record) && settle::applies(string(&record, "agent")) {
+        checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
+    }
+"#, ""),
             (r#"        // zerus-7cq23: a person can type into the terminal after the gate read
         // the composer empty, and Claude keeps such text out of view above a
         // paste taller than its view. Read it empty again right before the

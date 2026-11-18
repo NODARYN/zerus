@@ -2049,6 +2049,11 @@ fn submit_core(
     if matches!(origin, Origin::KeepWarm(_)) && effort::pending_applies(&record) {
         return Err(refused(typed, "model or effort settings are pending; no keep-warm ping was typed".into()));
     }
+    // zerus-szz00: Claude's send gate, its short-pane refusal included, comes
+    // before any pending settings key too; the gate after them stays.
+    if effort::pending_applies(&record) && settle::applies(string(&record, "agent")) {
+        checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
+    }
     // Pending settings may be typed here, whatever this returns.
     typed = effort::pending_applies(&record);
     if retain_refusal && typed { refusal::prepare(&witness(String::new(), false, None)).map_err(unknown)?; }
