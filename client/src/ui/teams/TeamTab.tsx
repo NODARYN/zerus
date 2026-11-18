@@ -8,6 +8,7 @@ import { navigationTeamFor } from "./lead-navigation";
 import { teamCall, type TaskButton } from "./actions";
 import { createTeamEditors, TeamEditButtons, type EditAction } from "./TeamEditors";
 import { MemberCard } from "./MemberCard";
+import { memberSessions } from "./member-session";
 import { TeamBar } from "./team-bar";
 import { TeamSettingsDialog } from "./TeamSettingsDialog";
 import { TaskActions } from "./TeamActions";
@@ -113,6 +114,8 @@ export function TeamWorkspace(props: {
   createEffect(() => { if (phaseFocus()?.team === teamId()) { setSelectedNode(null); setPlanMode("layers"); } });
   const groups = createMemo(() => boardColumns(props.view));
   const all = createMemo(() => props.view.groups.flatMap((group) => group.cards));
+  // One bounded pass finds every member's own session row (G2 of zerus-rzvct).
+  const memberRows = createMemo(() => memberSessions(props.view.members));
   // Waiting for you's Open task: the node it names, or the card a stage of that
   // number is folded into, is selected once. A node not on this page is looked
   // for from the first page through at most OPEN_NODE_PAGES pages; then a
@@ -326,7 +329,7 @@ export function TeamWorkspace(props: {
               <header class="team-section-head"><Icon name="users" size={14} /><h3>{tr("Members")}</h3><span class="count">{props.view.members.length}</span><span class="grow" /><button type="button" class="icon-btn team-members-close" data-team-members-close aria-label={tr("Close")} title={tr("Close")} onClick={dismissPreview}><Icon name="x" size={16} /></button></header>
               <For each={props.view.members}>
                 {(member) => <MemberCard member={member} teamStatus={props.view.bar.status} cards={all()} busy={props.busy} onSelect={select}
-                  onAction={(kind, id) => send(kind, { member: id })} />}
+                  session={memberRows().get(member.id)} onAction={(kind, id) => send(kind, { member: id })} />}
               </For>
             </section>
         </aside>
