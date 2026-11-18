@@ -560,18 +560,23 @@ record of that run, or, for a start slower than `hgs session-action`'s own
 record), that its terminal was positively alive then; the agent confirms its
 conversation later (zerus-5sl7r). A start seen alive whose terminal cannot be
 observed at the end of those 10 seconds is followed for at most 8 more, until
-an exact observation decides. A dead pane kept, or a terminal never observed
-exactly, is `uncertain`.
+an exact observation decides. A dead pane kept, a pane running another
+process than the launched one (tmux `respawn-pane`), or a terminal never
+observed exactly, is `uncertain`.
 
 Each observation is of the exact terminal the resume created, as its server
-answered the launch: on tmux the server's pid and start time and the pane's
-`%N` (`new-session -P`), on the Windows session host the host's pid and
-creation time and the pane. Only that server says the pane is gone. A
-missing or refused socket, no host, a server or host other than the one that
-created the pane (one started at the same path while the original runs on),
-or a failed or late answer is never read as an absent terminal. Each
-observation, its connection included, has a 2-second deadline; tmux's runs in
-the C locale. A resume that is not recorded ends the send.
+answered the launch: on tmux the server's pid and start time, the pane's
+`%N` and the pane's process (`new-session -P`), with that process's kernel
+birth read right after the launch; on the Windows session host the host's pid
+and creation time, the pane and its root process. Only that server says the
+pane is gone, and the pane is alive only while it runs the launched process
+(on tmux its pid and kernel birth). A missing or refused socket, no host, a
+server or host other than the one that created the pane (one started at the
+same path while the original runs on), or a failed or late answer is never
+read as an absent terminal. Each observation has a 2-second deadline; tmux's
+runs in the C locale. On Windows that deadline is absolute over the pipe, the
+hello and the request: the connection is shut down at it, however the host
+spreads its answer. A resume that is not recorded ends the send.
 
 After a recorded resume the same live operation waits, and only it. The wait
 has one budget of 180 seconds from the resume's drain, as long as the direct

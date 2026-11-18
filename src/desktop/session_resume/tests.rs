@@ -2848,6 +2848,7 @@ else:
                 "resume",
                 "replaced",
                 "dies",
+                "respawned",
                 "tmux_read_error",
                 "blocked_probe",
                 "slow_start",
@@ -3047,7 +3048,10 @@ else:
             //   connection would (`gap-window`);
             // - right after the launch the socket is moved away
             //   (`hide-socket`), and a sessionless server is started at its
-            //   path (`replace-server`).
+            //   path (`replace-server`);
+            // - the launched command's pane, once dead, is respawned with
+            //   another process before the first observation
+            //   (`respawn-dead`).
             // The login shell starts late (`shell-delay`), the agent too
             // (`agent-delay`).
             script(
@@ -3057,6 +3061,22 @@ else:
 tmux() {{ {program} -S {socket} -f /dev/null "$@"; }}
 if test "$1" = new-session; then
     test -e '{root}/gap-window' && date +%s%N > '{root}/launched-at'
+    if test -e '{root}/respawn-dead'; then
+        rm '{root}/respawn-dead'
+        tmux "$@" > '{root}/launched' || exit
+        pane=$(cut -d : -f 3 '{root}/launched')
+        n=0
+        until test "$(tmux display-message -p -t "$pane" '#{{pane_dead}}')" = 1; do
+            n=$((n + 1))
+            test "$n" -lt 250 || exit 2
+            sleep 0.02
+        done
+        tmux display-message -p -t "$pane" '#{{pane_dead}}:#{{pane_pid}}' > '{root}/dead'
+        tmux respawn-pane -t "$pane" sleep 45 || exit
+        tmux display-message -p -t "$pane" '#{{pane_dead}}:#{{pane_pid}}:#{{pane_start_command}}' > '{root}/respawned'
+        cat '{root}/launched'
+        exit 0
+    fi
     if test -e '{root}/hide-socket'; then
         rm '{root}/hide-socket'
         tmux "$@" || exit
@@ -3111,6 +3131,9 @@ exec {program} -S {socket} -f /dev/null "$@"
             script(
                 "bash",
                 r#"#!/bin/sh
+if test -f "$HOME/shell-exits"; then
+    exit 23
+fi
 if test -f "$HOME/shell-delay"; then
     sleep "$(cat "$HOME/shell-delay")"
 fi
@@ -3288,6 +3311,12 @@ exec '{}' "$@"
                     marker("gap-window");
                 }
                 "shifted_record" => std::fs::write(root.join("agent-delay"), "8").unwrap(),
+                // The launched login shell exits at once; its kept dead pane
+                // is respawned with another process (the review's case).
+                "respawned" => {
+                    marker("shell-exits");
+                    marker("respawn-dead");
+                }
                 _ => (),
             }
             let original = original_at(
@@ -3509,6 +3538,41 @@ exec '{}' "$@"
                             .any(|line| line.starts_with(&format!("{name}\t"))),
                         "{panes}"
                     );
+                    assert_eq!(record_of(&f.state, name)["run_id"], run.as_str());
+                }
+                "respawned" => {
+                    // Never "completed": the launched command ended, and the
+                    // live process in its pane is another one.
+                    let dead = std::fs::read_to_string(root.join("dead")).unwrap();
+                    let respawned = std::fs::read_to_string(root.join("respawned")).unwrap();
+                    let launched = std::fs::read_to_string(root.join("launched")).unwrap();
+                    println!("launched {launched:?}, dead {dead:?}, respawned {respawned:?}");
+                    assert!(dead.starts_with("1:"), "{dead}");
+                    assert!(
+                        respawned.starts_with("0:") && respawned.contains("sleep 45"),
+                        "{respawned}"
+                    );
+                    let process = launched.trim().rsplit(':').next().unwrap();
+                    assert_ne!(respawned.split(':').nth(1), Some(process));
+                    assert_eq!(
+                        (receipt.resume.step, receipt.send.step),
+                        (Step::Unknown, Step::NotStarted),
+                        "{panes}"
+                    );
+                    assert!(
+                        admitted.elapsed() < Duration::from_secs(9),
+                        "{:?}",
+                        admitted.elapsed()
+                    );
+                    let cli = std::fs::read_to_string(
+                        f.state
+                            .join("action_receipts")
+                            .join(format!("{}.json", original.plan.resume_request_id)),
+                    )
+                    .unwrap();
+                    assert!(cli.contains("another process runs in its pane"), "{cli}");
+                    assert!(observed.iter().any(|line| line
+                        .contains(&format!(":0:{}", respawned.split(':').nth(1).unwrap()))));
                     assert_eq!(record_of(&f.state, name)["run_id"], run.as_str());
                 }
                 "dies" => {

@@ -18,7 +18,11 @@ use super::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::{fmt, io, sync::Arc, time::Duration};
+use std::{
+    fmt, io,
+    sync::{mpsc, Arc},
+    time::{Duration, Instant},
+};
 
 /// How long a client waits for the answer to its hello.
 const HELLO_ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -73,6 +77,29 @@ pub(crate) struct Connection {
     link: Arc<dyn Link>,
     host: HelloReply,
     next: u64,
+    /// Ends the connection at an observation's deadline ([`Self::hello_until`]).
+    _deadline: Option<Deadline>,
+}
+
+/// One absolute deadline over a connection (zerus-5sl7r): at `until` its link
+/// is shut down, so a read or write still waiting then ends at once, however
+/// the host spread its answer over reads that each came in time, and nothing
+/// answers on it later. Dropped earlier, it ends without effect.
+struct Deadline(#[allow(dead_code)] mpsc::Sender<()>);
+
+impl Deadline {
+    fn arm(link: Arc<dyn Link>, until: Instant) -> io::Result<Self> {
+        let (disarm, armed) = mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("host-observation-deadline".into())
+            .spawn(move || {
+                let left = until.saturating_duration_since(Instant::now());
+                if armed.recv_timeout(left) == Err(mpsc::RecvTimeoutError::Timeout) {
+                    link.shutdown();
+                }
+            })?;
+        Ok(Self(disarm))
+    }
 }
 
 impl Connection {
@@ -80,6 +107,28 @@ impl Connection {
     /// `HELLO_ANSWER_TIMEOUT` for it.
     pub(crate) fn hello(link: Arc<dyn Link>, role: Role) -> Result<Self, ClientError> {
         Self::hello_within(link, role, HELLO_ANSWER_TIMEOUT)
+    }
+
+    /// [`Self::hello`] for an observation that ends by `until`: the hello and
+    /// every later request on this connection end then at the latest, the
+    /// link shut down ([`Deadline`]).
+    pub(crate) fn hello_until(
+        link: Arc<dyn Link>,
+        role: Role,
+        until: Instant,
+    ) -> Result<Self, ClientError> {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ClientError::Connect(
+                "the observation's deadline passed".into(),
+            ));
+        }
+        let deadline = Deadline::arm(link.clone(), until).map_err(|error| {
+            ClientError::Connect(format!("the observation's deadline: {error}"))
+        })?;
+        let mut connection = Self::hello_within(link, role, left)?;
+        connection._deadline = Some(deadline);
+        Ok(connection)
     }
 
     /// [`Self::hello`], waiting at most `wait` for the answer.
@@ -124,6 +173,7 @@ impl Connection {
                 link,
                 host,
                 next: 1,
+                _deadline: None,
             }),
             Ok(HelloAnswer::Refused(error)) => Err(ClientError::Refused(error)),
             Err(error) => Err(ClientError::Protocol(format!(
@@ -291,11 +341,17 @@ mod windows {
     }
 
     fn attempt(state_dir: &Path, role: Role, deadline: Instant) -> Attempt {
-        attempt_within(state_dir, role, deadline, HELLO_ANSWER_TIMEOUT)
+        attempt_within(state_dir, role, deadline, None)
     }
 
-    /// [`attempt`], waiting at most `hello` for the host's hello answer.
-    fn attempt_within(state_dir: &Path, role: Role, deadline: Instant, hello: Duration) -> Attempt {
+    /// [`attempt`]; with `observation`, the connection's hello and every
+    /// later request end by that deadline ([`Connection::hello_until`]).
+    fn attempt_within(
+        state_dir: &Path,
+        role: Role,
+        deadline: Instant,
+        observation: Option<Instant>,
+    ) -> Attempt {
         let secret = match endpoint::existing_secret(state_dir) {
             Ok(Some(secret)) => secret,
             Ok(None) => return Attempt::Absent,
@@ -316,7 +372,12 @@ mod windows {
             Ok(pid) => pid,
             Err(error) => return Attempt::Failed(ClientError::Connect(error.to_string())),
         };
-        match Connection::hello_within(Arc::new(PipeLink::new(stream)), role, hello) {
+        let link: Arc<dyn Link> = Arc::new(PipeLink::new(stream));
+        let hello = match observation {
+            Some(until) => Connection::hello_until(link, role, until),
+            None => Connection::hello(link, role),
+        };
+        match hello {
             Err(ClientError::Closed) => Attempt::Closing,
             Err(error) => Attempt::Failed(error),
             Ok(connection) if connection.host().pid != server => {
@@ -347,22 +408,22 @@ mod windows {
         }
     }
 
-    /// One connect to the host of the canonical `state_dir`, the pipe and the
-    /// host's hello answer both by `until` (zerus-5sl7r: an observation within
-    /// its own deadline); a busy pipe or an exiting host is not waited for,
-    /// and none is ever started.
+    /// One connect to the host of the canonical `state_dir` for an
+    /// observation that ends by `until` (zerus-5sl7r): the pipe by then, and
+    /// the hello and every request on the connection by then too, whatever
+    /// the pipe's wait took ([`Connection::hello_until`]). A busy pipe or an
+    /// exiting host is not waited for, and none is ever started.
     pub(crate) fn connect_until(
         state_dir: &Path,
         role: Role,
         until: Instant,
     ) -> Result<Connection, ClientError> {
-        let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
+        if Instant::now() >= until {
             return Err(ClientError::Connect(
                 "the observation's deadline passed".into(),
             ));
         }
-        match attempt_within(state_dir, role, until, left) {
+        match attempt_within(state_dir, role, until, Some(until)) {
             Attempt::Connected(connection) => Ok(connection),
             Attempt::Absent => Err(ClientError::NoHost),
             Attempt::Closing => Err(ClientError::Closed),
@@ -608,6 +669,108 @@ mod tests {
         );
         drop(connection);
         held.join().unwrap();
+    }
+
+    /// zerus-5sl7r, the review's fragmented-frame probe: a host that sends
+    /// its hello answer, or the answer to a request, in pieces that each come
+    /// within a read's timeout still ends the observation at its one deadline
+    /// (300 ms here), not at about 500 ms with a late answer taken.
+    #[cfg(unix)]
+    #[test]
+    fn an_observation_ends_at_its_deadline_however_the_host_spreads_its_answer() {
+        use std::{io::Write, net::Shutdown, os::unix::net::UnixStream};
+        struct StreamLink(UnixStream);
+        impl Link for StreamLink {
+            fn read_frame(&self) -> Result<Option<super::super::protocol::Frame>, FrameError> {
+                super::super::protocol::read_frame(&mut &self.0)
+            }
+            fn write_frame(&self, kind: Kind, payload: &[u8]) -> Result<(), FrameError> {
+                super::super::protocol::write_frame(&mut &self.0, kind, payload)
+            }
+            fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+                self.0.set_read_timeout(timeout)
+            }
+            fn shutdown(&self) {
+                let _ = self.0.shutdown(Shutdown::Both);
+            }
+        }
+        // Each piece in time for one read's timeout, the whole one late.
+        fn drip(stream: &mut UnixStream, payload: &[u8]) {
+            for part in [&payload[..4], &payload[4..5], &payload[5..]] {
+                thread::sleep(Duration::from_millis(165));
+                if stream.write_all(part).is_err() {
+                    return;
+                }
+            }
+        }
+        fn framed<T: serde::Serialize>(value: &T) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            super::super::protocol::write_json(&mut bytes, Kind::Json, value).unwrap();
+            bytes
+        }
+        let wait = Duration::from_millis(300);
+        let host = |answer_hello_at_once: bool| {
+            let (client, mut peer) = UnixStream::pair().unwrap();
+            let server = thread::spawn(move || {
+                super::super::protocol::read_frame(&mut peer)
+                    .unwrap()
+                    .unwrap();
+                let hello = framed(&HelloAnswer::Accepted(identity()));
+                if answer_hello_at_once {
+                    peer.write_all(&hello).unwrap();
+                } else {
+                    drip(&mut peer, &hello);
+                    return;
+                }
+                if let Ok(Some(_)) = super::super::protocol::read_frame(&mut peer) {
+                    drip(&mut peer, &framed(&Response::ok(1, &serde_json::json!({}))));
+                }
+            });
+            (Arc::new(StreamLink(client)) as Arc<dyn Link>, server)
+        };
+        // The hello answer spread over 495 ms.
+        let (link, server) = host(false);
+        let started = Instant::now();
+        assert!(Connection::hello_until(link, Role::Cli, started + wait).is_err());
+        let hello = started.elapsed();
+        server.join().unwrap();
+        // The hello answered at once, the request's answer spread over 495 ms.
+        let (link, server) = host(true);
+        let started = Instant::now();
+        let mut connection = Connection::hello_until(link, Role::Cli, started + wait).unwrap();
+        connection.set_read_timeout(Some(wait)).unwrap();
+        assert!(connection.request(Op::List).is_err());
+        let request = started.elapsed();
+        drop(connection);
+        server.join().unwrap();
+        println!(
+            "300 ms deadline: spread hello ended after {hello:?}, spread answer after {request:?}"
+        );
+        assert!(hello < Duration::from_millis(450), "{hello:?}");
+        assert!(request < Duration::from_millis(450), "{request:?}");
+        // A prompt host is answered as before, and the deadline then ends
+        // nothing.
+        let (client, mut peer) = UnixStream::pair().unwrap();
+        let server = thread::spawn(move || {
+            super::super::protocol::read_frame(&mut peer)
+                .unwrap()
+                .unwrap();
+            peer.write_all(&framed(&HelloAnswer::Accepted(identity())))
+                .unwrap();
+            super::super::protocol::read_frame(&mut peer)
+                .unwrap()
+                .unwrap();
+            peer.write_all(&framed(&Response::ok(1, &serde_json::json!({"ok": true}))))
+                .unwrap();
+        });
+        let link: Arc<dyn Link> = Arc::new(StreamLink(client));
+        let mut connection =
+            Connection::hello_until(link, Role::Cli, Instant::now() + wait).unwrap();
+        assert_eq!(
+            connection.request(Op::List).unwrap(),
+            serde_json::json!({"ok": true})
+        );
+        server.join().unwrap();
     }
 
     #[test]

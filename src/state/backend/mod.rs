@@ -182,17 +182,24 @@ pub(crate) enum TerminalState {
     DeadPane,
     /// The server that created the pane runs and has no such pane.
     Absent,
+    /// The pane runs another process than the one the launch started (tmux
+    /// `respawn-pane`): the launched command ended, its pane remains.
+    Replaced,
     Unknown,
 }
 
 /// The terminal a launch created, as its server answered the launch: the
 /// server's identity (tmux: its pid and start time; the session host: its
-/// pid and creation time) and the pane's (`%N`, which a server never reuses
-/// while it runs). Observations are bound to both (zerus-5sl7r).
+/// pid and creation time), the pane's (`%N`, which a server never reuses
+/// while it runs) and the process the launch started in it (its pid, and its
+/// kernel birth where it could be read). Observations are bound to all three
+/// (zerus-5sl7r): a pane respawned with another process is not the launch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Launched {
     pub(crate) server: String,
     pub(crate) pane: String,
+    pub(crate) process: u32,
+    pub(crate) birth: Option<String>,
 }
 
 /// One fact about a pane, as the terminal reports it.

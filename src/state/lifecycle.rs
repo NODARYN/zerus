@@ -1315,7 +1315,9 @@ const TERMINAL_PROBE_WAIT: Duration = Duration::from_secs(2);
 ///   such pane, while the record still names the stopped run it resumed (the
 ///   scope's): it started nothing and left nothing, a definite failure;
 ///   gone with a record that moved on otherwise: uncertain;
-/// - its command ended and its dead pane stays: uncertain;
+/// - its command ended and its dead pane stays, or another process runs in
+///   that pane (tmux `respawn-pane`): uncertain. Alive is only the launched
+///   process itself, by its pid and kernel birth;
 /// - at the end of `wait` a terminal positively alive is a slow start (a
 ///   login shell, its hooks or the state lock before the first record):
 ///   completed, as an unscoped resume reports at once, and the caller's
@@ -1376,6 +1378,11 @@ fn supervisor_started(
             TerminalState::DeadPane => {
                 return Err(format!(
                     "{name}: the resumed terminal's command ended before its supervisor started; its dead pane {terminal} remains"
+                ));
+            }
+            TerminalState::Replaced => {
+                return Err(format!(
+                    "{name}: the resumed terminal's command ended before its supervisor started and another process runs in its pane {terminal}; inspect the session"
                 ));
             }
             _ => {}

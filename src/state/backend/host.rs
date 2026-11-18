@@ -769,7 +769,8 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
     /// One `pane_info` of the launched pane within `wait`, its connection
     /// included (zerus-5sl7r). Only the host that created the pane (same pid
     /// and creation time) says it is gone, by its own not-found answer; no
-    /// host, another host, a failed or late call is unknown.
+    /// host, another host, a failed or late call is unknown. A live pane is
+    /// the launch only while its root process is the one the launch started.
     fn terminal_state(&self, launched: &Launched, wait: std::time::Duration) -> TerminalState {
         let (host, answer) = self.connector.call_within(
             Op::PaneInfo {
@@ -783,6 +784,7 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
         match answer.map(serde_json::from_value::<PaneDetails>) {
             Ok(Ok(details)) if details.pane != launched.pane => TerminalState::Unknown,
             Ok(Ok(details)) if details.dead => TerminalState::DeadPane,
+            Ok(Ok(details)) if details.pane_pid != launched.process => TerminalState::Replaced,
             Ok(Ok(_)) => TerminalState::Alive,
             Err(failure) if failure.not_found() => TerminalState::Absent,
             Ok(Err(_)) | Err(_) => TerminalState::Unknown,
@@ -809,6 +811,8 @@ impl<C: Connector> TerminalBackend for HostBackend<C> {
                 host.map(|server| Launched {
                     server,
                     pane: created.pane,
+                    process: created.pid,
+                    birth: None,
                 })
             })
     }
@@ -1102,9 +1106,11 @@ mod windows {
             connection.request(op).map_err(Failure::Host)
         }
 
-        /// The connection, its hello and the request each end by the
-        /// deadline; a request that timed out leaves only this connection out
-        /// of step, and it is dropped.
+        /// The pipe, the hello and the request end by one absolute deadline:
+        /// the connection is shut down then, however the host spread its
+        /// answers over reads that each came in time
+        /// ([`client::connect_until`]). A request that ended so leaves only
+        /// this connection out of step, and it is dropped.
         fn call_within(
             &self,
             op: Op,
@@ -1353,13 +1359,15 @@ mod tests {
     /// says nothing.
     #[test]
     fn only_the_creating_host_says_its_pane_is_gone() {
-        use TerminalState::{Absent, Alive, DeadPane, Unknown};
+        use TerminalState::{Absent, Alive, DeadPane, Replaced, Unknown};
         let launched = Launched {
             server: "70:133".into(),
             pane: "%4".into(),
+            process: 71,
+            birth: None,
         };
         type Reply = fn() -> std::result::Result<Value, Failure>;
-        let cases: [(Option<&str>, Reply, TerminalState); 11] = [
+        let cases: [(Option<&str>, Reply, TerminalState); 12] = [
             (
                 Some("70:133"),
                 || Ok(serde_json::to_value(details()).unwrap()),
@@ -1373,6 +1381,16 @@ mod tests {
                     Ok(serde_json::to_value(d).unwrap())
                 },
                 DeadPane,
+            ),
+            // Its pane alive with another root process than the launch's.
+            (
+                Some("70:133"),
+                || {
+                    let mut d = details();
+                    d.pane_pid = 72;
+                    Ok(serde_json::to_value(d).unwrap())
+                },
+                Replaced,
             ),
             (
                 Some("70:133"),
