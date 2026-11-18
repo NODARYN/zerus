@@ -184,11 +184,15 @@ fn claude_view(rows: &[String], cursor_y: usize) -> Option<View> {
     let Some(above) = above else {
         // Claude's rule or `↓` bar closes its composer: every row up to it is
         // the composer's, blank ones (its empty lines) included (zerus-7cq23).
-        // A layout without either ends at its first blank row, and the screen
-        // then shows nothing of the rows below.
+        // A layout without either never settles, and its text is evidence
+        // only: it ends at its first row that is blank or not indented as
+        // Claude's continuation rows are, so rows of the conversation under
+        // the prompt stay out of the receipt (zerus-szz00).
         let closing = (start + 1..rows.len()).find(closes);
         let end = closing.unwrap_or_else(|| {
-            (start + 1..rows.len()).find(|index| rows[*index].trim().is_empty()).unwrap_or(rows.len())
+            (start + 1..rows.len())
+                .find(|index| rows[*index].trim().is_empty() || !rows[*index].starts_with("  "))
+                .unwrap_or(rows.len())
         });
         let text = rows[start..end]
             .iter()
@@ -429,6 +433,16 @@ pub(in crate::state) fn before_paste(terminal: &dyn backend::TerminalBackend, cl
 /// Waits until a frame of the composer holds still, at most `BEFORE_PASTE`.
 /// The caller holds no lock meanwhile and reads the composer again under it
 /// (zerus-oz7cz).
+///
+/// Under the lock again the send checks that its typing marker and run are
+/// still its own (`typing_ours`) and calls `terminating::check_mutation`.
+/// No production writer sets that termination marker today, so the live
+/// fences for a pause, kill or rename in this window are, as in the unlocked
+/// settle after the paste (zerus-szz00): the marker and run check; this
+/// composer read under the lock, whose input claim pins the pane's run marker
+/// and session name and which a stopped or replaced agent does not pass as an
+/// empty Claude prompt; the paste failing on a pane that is gone; and the
+/// process and pane checks before the one Enter.
 pub(in crate::state) fn hold_still(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) {
     let deadline = Instant::now() + BEFORE_PASTE;
     while frame(terminal, claim).is_none() && Instant::now() < deadline {
@@ -899,8 +913,10 @@ mod tests {
         assert_eq!(composer_text("claude", &multi, 2).as_deref(), Some("first line\nsecond line"));
         assert_eq!(composer_text("claude", &screen("", "x"), 2).as_deref(), Some(""));
         assert_eq!(composer_text("claude", "no prompt here\n", 0), None);
-        // A layout without rules ends at the first blank row.
-        assert_eq!(composer_text("claude", "❯ echoed\nsecond\n\nolder output\n", 1).as_deref(), Some("echoed\nsecond"));
+        // A layout without rules ends at its first row that is blank or not
+        // indented as Claude's continuation rows are (zerus-szz00).
+        assert_eq!(composer_text("claude", "❯ echoed\n  second\n\nolder output\n", 1).as_deref(), Some("echoed\nsecond"));
+        assert_eq!(composer_text("claude", "❯ echoed\nsecond\n\nolder output\n", 1).as_deref(), Some("echoed"));
         let long = screen(&"x".repeat(RESIDUE_CHARS + 50), "x");
         assert_eq!(composer_text("claude", &long, 2).unwrap().chars().count(), RESIDUE_CHARS);
     }
@@ -1164,6 +1180,18 @@ mod tests {
         let terminal = TypingOn(0.into());
         assert_eq!(before(&terminal).unwrap().1.as_deref(), Some("x"));
         assert_eq!(residue(&terminal, &claim()), None);
+    }
+
+    #[test]
+    fn a_composer_without_a_closing_rule_keeps_the_conversation_out_of_its_evidence() {
+        // zerus-szz00, hand-made: a draft on the prompt row and the
+        // conversation right under it, no rule. Only the composer's rows are
+        // evidence, in the receipt and in the refusal before the paste.
+        let screen = "❯ x\n● Fixture complete.\n  continued reply\n";
+        assert_eq!(composer_text("claude", screen, 0).as_deref(), Some("x"));
+        assert_eq!(before(&Frames::new(vec![(screen.to_owned(), 3, 0)])).unwrap().1.as_deref(), Some("x"));
+        // Claude's own continuation rows, indented, are still the composer's.
+        assert_eq!(composer_text("claude", "❯ first\n  second\n● Done.\n", 0).as_deref(), Some("first\nsecond"));
     }
 
     // zerus-oz7cz: Claude Code 2.1.327 from the private real TUI after its first
