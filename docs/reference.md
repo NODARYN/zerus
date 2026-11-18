@@ -2678,6 +2678,25 @@ For Claude and Kimi messages ending in a literal backslash, the paste includes a
 final newline so the single Enter submits the unchanged message instead of
 activating the agent's backslash-Enter line continuation. This is verified
 against native history; no second Enter is sent as an automatic retry.
+Claude's composer rules live in `src/state/input/settle.rs`: its module
+documentation, and tests that read real captured screens
+(`tests/fixtures/claude-composer-*`). `src/state/input.rs` applies them in the
+send gate and in the read made right before the paste.
+
+The single Enter follows only a composer that shows this paste settled, with
+Claude's closing rule or `↓ N more` bar on the screen. A view with rows out of
+view never proves.
+
+Right before the paste the composer must read empty once more. When it does
+not, that frame's bounded text becomes the receipt's composer evidence.
+
+A pane too short to show the closing rule is refused by the send gate before
+any receipt or input, with "Claude's pane is too short to show its whole
+composer; nothing was sent; make the pane taller and send again". With Claude
+Code 2.1.327 that is seven rows or fewer; eight rows still send. If the pane
+shrinks after the gate, the read right before the paste refuses the message
+as delivery uncertain, with nothing pasted. If it shrinks during the settle,
+the message stays in the composer, uncertain, and Enter is not pressed.
 On Unix, a public send to an existing-ID Claude, Codex or Kimi session can apply
 one exact scheduled Settings change before its message. The same custodian keeps
 the original SID exclusion, pinned Root object and one original 25-second deadline

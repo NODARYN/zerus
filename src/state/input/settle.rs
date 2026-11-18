@@ -33,6 +33,14 @@
 //! (zerus-7cq23); only keys that reach Claude after that read, or that it has
 //! read but not yet drawn, remain unseen. A composer with any row out of view
 //! below, or whose closing rule is not on the screen, never settles.
+//!
+//! The read right before the paste keeps its own frame's text as the evidence
+//! of a refusal, and a frame that moves while it is read is waited for
+//! without the state lock, then read again under it (zerus-oz7cz). A pane too
+//! short to show the closing rule (seven rows or fewer at 2.1.327) is refused
+//! by the send gate before anything is published, and by this read when the
+//! pane shrinks after the gate; only a shrink during the settle leaves the
+//! paste in the composer, as delivery uncertain.
 use super::*;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -129,7 +137,7 @@ impl Scrolled {
     /// one shown, nothing out of view below, and the cursor right after its
     /// last character. Rows out of view cannot be read: text typed into the
     /// composer before the paste is excluded by the empty composer read right
-    /// before the paste (`empty`), as for a composer in full view, and by this
+    /// before the paste (`before_paste`), as for a composer in full view, and by this
     /// count wherever it adds a row; text typed later shows at the cursor.
     fn holds(&self, pasted: &str, cursor_x: usize, cursor_y: usize) -> bool {
         if self.below != 0 || self.rows.is_empty() || self.width != self.closing || self.width <= GUTTER * 2 {
@@ -356,22 +364,69 @@ pub(in crate::state) fn residue(terminal: &dyn backend::TerminalBackend, claim: 
     composer_text(claim.agent, &screen, y).filter(|text| !text.is_empty())
 }
 
-/// How long the read right before the paste waits for a frame that holds still.
+/// The send gate's refusal of a Claude composer the pane cuts off (zerus-oz7cz).
+pub(in crate::state) const SHORT: &str =
+    "Claude's pane is too short to show its whole composer; nothing was sent; make the pane taller and send again";
+
+/// Whether the pane's bottom edge cuts off Claude's composer around
+/// `cursor_y`: no closing rule or bar under its prompt row on the screen.
+/// Claude Code 2.1.327 draws its prompt row on the last row of a pane seven
+/// rows tall or shorter (eight still shows the rule). Rows of the composer
+/// under the prompt row are then out of view, so a paste there never settles
+/// (zerus-oz7cz).
+pub(in crate::state) fn cut(agent: &str, screen: &str, cursor_y: usize) -> bool {
+    let rows: Vec<String> = screen.lines().map(plain).collect();
+    agent == "claude" && matches!(claude_view(&rows, cursor_y), Some(View::Whole { below: None, .. }))
+}
+
+/// How long the wait before the paste, unlocked, gives a frame to hold still.
 const BEFORE_PASTE: Duration = Duration::from_millis(250);
 
-/// Whether Claude's composer is an empty prompt now: the read immediately
-/// before the paste (zerus-7cq23). A frame whose cursor moved while it was
-/// read is read again until `BEFORE_PASTE` passes; anything else that is not
-/// an empty prompt, a draft or an unreadable terminal, is not empty.
-pub(in crate::state) fn empty(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) -> bool {
+/// What one read of Claude's composer right before the paste found
+/// (zerus-7cq23).
+pub(in crate::state) enum Before {
+    /// An empty prompt with its closing rule on the screen.
+    Empty,
+    /// Anything else: why, and the composer's bounded text in that same frame
+    /// (zerus-oz7cz), None when it shows none.
+    Refused(&'static str, Option<String>),
+    /// The cursor moved while the frame was read, or the terminal was not read.
+    Moving,
+}
+
+impl Before {
+    /// The refusal and its evidence, when this read allows no paste.
+    pub(in crate::state) fn refused(self) -> Option<(&'static str, Option<String>)> {
+        match self {
+            Before::Empty => None,
+            Before::Refused(reason, composer) => Some((reason, composer)),
+            Before::Moving => Some(("Claude's composer did not hold still right before the paste; nothing was pasted", None)),
+        }
+    }
+}
+
+/// One read of Claude's composer immediately before the paste (zerus-7cq23):
+/// an empty prompt, or why not with that frame's own text as the evidence.
+pub(in crate::state) fn before_paste(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) -> Before {
+    let Some((screen, x, y)) = frame(terminal, claim) else {
+        return Before::Moving;
+    };
+    let composer = || composer_text(claim.agent, &screen, y).filter(|text| !text.is_empty());
+    if !composer_empty_for_model(claim.agent, &screen, x, y, None) {
+        return Before::Refused("Claude's composer was not empty right before the paste; nothing was pasted", composer());
+    }
+    if cut(claim.agent, &screen, y) {
+        return Before::Refused("Claude's pane became too short to show its whole composer; nothing was pasted", composer());
+    }
+    Before::Empty
+}
+
+/// Waits until a frame of the composer holds still, at most `BEFORE_PASTE`.
+/// The caller holds no lock meanwhile and reads the composer again under it
+/// (zerus-oz7cz).
+pub(in crate::state) fn hold_still(terminal: &dyn backend::TerminalBackend, claim: &backend::InputClaim) {
     let deadline = Instant::now() + BEFORE_PASTE;
-    loop {
-        if let Some((screen, x, y)) = frame(terminal, claim) {
-            return composer_empty_for_model(claim.agent, &screen, x, y, None);
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
+    while frame(terminal, claim).is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -1042,25 +1097,109 @@ mod tests {
         }
     }
 
+    /// The refusal and evidence of one read right before the paste.
+    fn before(terminal: &dyn backend::TerminalBackend) -> Option<(&'static str, Option<String>)> {
+        before_paste(terminal, &claim()).refused()
+    }
+
     #[test]
     fn the_composer_is_read_empty_right_before_the_paste_only_on_an_empty_prompt() {
         let one = |screen: &str, x: usize, y: usize| Frames::new(vec![(screen.to_owned(), x, y)]);
-        assert!(empty(&one(EMPTY, 2, 21), &claim()));
+        assert_eq!(before(&one(EMPTY, 2, 21)), None);
         // A person's draft, and a composer holding a message out of view.
-        assert!(!empty(&one(DRAFT, 3, 21), &claim()));
-        assert!(!empty(&one(SCROLLED, 18, 21), &claim()));
-        // A frame whose cursor moved while it was read is read again, and
-        // the frame that holds still decides.
+        let (reason, composer) = before(&one(DRAFT, 3, 21)).unwrap();
+        assert!(reason.contains("was not empty right before the paste; nothing was pasted"), "{reason}");
+        assert_eq!(composer.as_deref(), Some("x"));
+        let (_, composer) = before(&one(SCROLLED, 18, 21)).unwrap();
+        assert!(composer.unwrap().starts_with("↑ 3 more\n"));
+        // A frame whose cursor moved while it was read decides nothing: the
+        // send waits for one that holds still, then reads the composer again.
         let frames = |first: (&str, usize), then: (&str, usize)| {
             Frames::new(vec![(first.0.to_owned(), first.1, 21), (then.0.to_owned(), then.1, 21)])
         };
-        assert!(empty(&frames((DRAFT, 3), (EMPTY, 2)), &claim()));
-        assert!(!empty(&frames((EMPTY, 2), (DRAFT, 3)), &claim()));
-        // One that never holds still is not empty, after a bounded wait.
+        for (first, then, refused) in [((DRAFT, 3), (EMPTY, 2), false), ((EMPTY, 2), (DRAFT, 3), true)] {
+            let terminal = frames(first, then);
+            assert!(matches!(before_paste(&terminal, &claim()), Before::Moving));
+            hold_still(&terminal, &claim());
+            assert_eq!(before(&terminal).is_some(), refused, "{first:?} then {then:?}");
+        }
+        // One that never holds still is refused, with no frame as evidence,
+        // and the unlocked wait for it is bounded.
+        let terminal = Moving(0.into());
+        let (reason, composer) = before(&terminal).unwrap();
+        assert!(reason.contains("did not hold still right before the paste; nothing was pasted"), "{reason}");
+        assert_eq!(composer, None);
         let start = Instant::now();
-        assert!(!empty(&Moving(0.into()), &claim()));
+        hold_still(&terminal, &claim());
         assert!(start.elapsed() >= BEFORE_PASTE, "{:?}", start.elapsed());
         assert!(start.elapsed() < BEFORE_PASTE * 4, "{:?}", start.elapsed());
+        // A frame that holds still ends the wait at once.
+        let start = Instant::now();
+        hold_still(&one(EMPTY, 2, 21), &claim());
+        assert!(start.elapsed() < BEFORE_PASTE, "{:?}", start.elapsed());
+    }
+
+    /// The real draft frame, read once with the cursor still; every later
+    /// read sees the cursor move, as when the person keeps typing.
+    struct TypingOn(std::sync::atomic::AtomicUsize);
+    impl backend::TerminalBackend for TypingOn {
+        fn input_state(&self, _claim: &backend::InputClaim) -> Result<backend::InputState> {
+            let read = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(backend::InputState { cursor_x: if read < 2 { 3 } else { read }.to_string(), cursor_y: "21".into() })
+        }
+        fn capture(&self, _pane: &str, _mode: backend::Capture) -> Result<Vec<u8>> {
+            Ok(DRAFT.as_bytes().to_vec())
+        }
+    }
+
+    #[test]
+    fn a_refusal_right_before_the_paste_keeps_the_text_of_the_frame_that_refused() {
+        // zerus-oz7cz: the person keeps typing after the read that refused.
+        // Another read now has no frame, so the refusal's own is the evidence.
+        let terminal = TypingOn(0.into());
+        assert_eq!(before(&terminal).unwrap().1.as_deref(), Some("x"));
+        assert_eq!(residue(&terminal, &claim()), None);
+    }
+
+    // zerus-oz7cz: Claude Code 2.1.327 from the private real TUI after its first
+    // turn, its pane shrunk from 80x24 to 8 and to 7 rows. At 8 its closing
+    // rule is the last row; at 7 the prompt row is, and the rule is cut off.
+    const EMPTY_8: &str = include_str!("../../../tests/fixtures/claude-composer-empty-8-rows-2.1.327.txt");
+    const EMPTY_7: &str = include_str!("../../../tests/fixtures/claude-composer-empty-7-rows-2.1.327.txt");
+    /// `Short single line of the fixture.` pasted as hgs pastes, and a
+    /// two-line message Claude shows as a placeholder in a pane this short.
+    const PASTED_8: &str = include_str!("../../../tests/fixtures/claude-composer-pasted-8-rows-2.1.327.txt");
+    const PLACEHOLDER_8: &str = include_str!("../../../tests/fixtures/claude-composer-placeholder-8-rows-2.1.327.txt");
+    const PASTED_7: &str = include_str!("../../../tests/fixtures/claude-composer-pasted-7-rows-2.1.327.txt");
+
+    #[test]
+    fn a_pane_too_short_for_the_composers_rule_is_refused_before_anything_is_sent() {
+        let one = |screen: &str, x: usize, y: usize| Frames::new(vec![(screen.to_owned(), x, y)]);
+        let record = json!({"agent": "claude", "name": "claude/p/s", "run_id": "r", "pane": "%1", "activity": "idle", "phase": "idle"});
+        // 7 rows: the send gate refuses before any receipt, with its sentence.
+        assert!(cut("claude", EMPTY_7, 6));
+        match terminal_gate_on(&record, true, true, &one(EMPTY_7, 2, 6)) {
+            Err(Gate::Other(reason)) => assert_eq!(reason, SHORT),
+            other => panic!("{other:?}"),
+        }
+        // A pane that shrank after the gate: refused right before the paste.
+        let (reason, composer) = before(&one(EMPTY_7, 2, 6)).unwrap();
+        assert!(reason.contains("too short to show its whole composer; nothing was pasted"), "{reason}");
+        assert_eq!(composer, None);
+        // A paste there never settles: a shrink during the settle leaves it.
+        let single = "Short single line of the fixture.";
+        assert!(settle_tall(&one(PASTED_7, 35, 6), single).is_err());
+        // 8 rows still sends: gate, read before the paste, settle and fence.
+        assert!(!cut("claude", EMPTY_8, 6));
+        assert!(terminal_gate_on(&record, true, true, &one(EMPTY_8, 2, 6)).is_ok());
+        assert_eq!(before(&one(EMPTY_8, 2, 6)), None);
+        assert_eq!(settle_tall(&one(PASTED_8, 35, 6), single).as_deref(), Ok(single));
+        assert!(still_tall(&one(PASTED_8, 35, 6), single, single));
+        let two = "Short first line of the fixture.\nShort third line of the fixture.";
+        assert_eq!(settle_tall(&one(PLACEHOLDER_8, 27, 6), two).as_deref(), Ok("[Pasted text #1 +1 lines]"));
+        // So does a full pane, and the check is Claude's alone.
+        assert!(!cut("claude", EMPTY, 21));
+        assert!(!cut("codex", EMPTY_7, 6));
     }
 
     #[test]
