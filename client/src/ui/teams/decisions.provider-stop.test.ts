@@ -15,6 +15,14 @@ it("localizes the provider stop for stage 21 without displaying the English fall
   })).toBe("На этапе №21 задачи №20 участник m3 (Kimi) достиг лимита использования. Проверка возвращена руководителю. Просмотрите изменения или выберите следующее действие.");
 });
 
+it("localizes a lead's informational staffing item", () => {
+  expect(waitingNote({
+    code: "lead_member_added",
+    parameters: ["m4", "Codex", "reviewer"],
+    text: "English fallback",
+  })).toBe("Руководитель добавил участника m4 (Codex) для работы в роли reviewer.");
+});
+
 it("names the stop and task for a standalone hand-back", () => {
   expect(waitingNote({
     code: "provider_stop_authentication",

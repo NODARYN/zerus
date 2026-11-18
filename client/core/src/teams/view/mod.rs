@@ -132,7 +132,10 @@ pub(crate) fn service_notes(row: &Value) -> Vec<ServiceNote> {
             .map(|text| cut(text, NOTE_TEXT_CHARS))
             .filter(|text| !text.is_empty());
         let values = array(entry, "parameters");
-        let parameters = if code.starts_with("provider_stop_") && (3..=4).contains(&values.len()) {
+        let formatted_note = (code.starts_with("provider_stop_")
+            && (3..=4).contains(&values.len()))
+            || (code == "lead_member_added" && values.len() == 3);
+        let parameters = if formatted_note {
             values
                 .iter()
                 .map(|value| {

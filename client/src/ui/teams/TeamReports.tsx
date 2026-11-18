@@ -10,9 +10,13 @@ import { reportRows } from "./feed";
 export type DrawerAction = (kind: string, fields: Record<string, unknown>) => void;
 
 export function InboxText(props: { row: DrawerRow }) {
-  const localized = () => props.row.kind.startsWith("provider_stop:")
-    ? props.row.notes.find(isProviderStopNote)
-    : undefined;
+  const localized = () => {
+    const { kind, notes } = props.row;
+    if (kind.startsWith("lead_member_added:")) {
+      return notes.find((note) => note.code === "lead_member_added");
+    }
+    return kind.startsWith("provider_stop:") ? notes.find(isProviderStopNote) : undefined;
+  };
   const text = () => {
     const note = localized();
     return note ? waitingNote(note) : props.row.text;
