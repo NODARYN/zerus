@@ -554,6 +554,13 @@ and is accepted when the review passes; `check` goes straight to the lead.
 Each stage is a task of its own, handed to a free member of the stage's role
 and never to the member who implemented the work.
 
+In Team settings, **Allow land stages** is off by default. After the update,
+existing teams with that switch off skip Land steps in custom pipelines.
+The Feed records why, and the pipeline continues to the next step or its
+normal acceptance. Turn the switch on to create new Land stages. A Land stage
+already created can finish. Creating a replacement for a retired Land stage
+also requires the switch to be on.
+
 The stage's holder answers with a verdict: pass, or return with findings. A
 return reopens the task to its implementer without the lead. After the
 pipeline's rounds, three unless it sets another number, the task goes to the
