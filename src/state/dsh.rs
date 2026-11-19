@@ -24,6 +24,7 @@ pub(crate) mod witness;
 mod answer;
 pub(in crate::state) mod dispatch_lock;
 pub(in crate::state) mod retirement;
+pub(in crate::state) mod native_archives;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
 #[cfg(all(test, unix))]
@@ -991,9 +992,7 @@ pub(crate) fn launch(
         if record != observed {
             return Err("DeepSeek binding changed before launch; refresh and retry".into());
         }
-        if retirement::pending(&record) {
-            return Err(retirement::RESTORE_PENDING.into());
-        }
+        if retirement::ready(&mut record)? { return Ok(()); }
         let mut expected = record.clone();
         ensure_host(&record)?;
         create_session_with(&mut record, |record| {
@@ -1737,20 +1736,17 @@ pub(super) fn fork(
     scope: Option<&session_action::Scope>,
 ) -> Result<String> {
     let (_session, mut record) = dispatch_lock::acquire(name)?;
-    if retirement::pending(&record) {
-        return Err(retirement::RESTORE_PENDING.into());
-    }
-    let expected = record.clone();
-    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
-    if binding(name)? != expected {
-        return Err("DeepSeek binding changed before fork".into());
-    }
     if let Some(scope) = scope { scope.check(&record)?; }
     if expected_run.is_some_and(|id| id != string(&record, "run_id"))
         || expected_conversation.is_some_and(|id| id != string(&record, "conversation_id"))
     {
         return Err("source session changed; refresh before forking".into());
     }
+    if dry && retirement::pending(&record) { return Err(retirement::RESTORE_PENDING.into()); }
+    retirement::ready(&mut record)?;
+    let expected = record.clone();
+    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
+    if binding(name)? != expected { return Err("DeepSeek binding changed before fork".into()); }
     // An archived session's name is free for a new one, as for other agents.
     let mut occupied: std::collections::BTreeSet<String> = binding_records().iter()
         .chain(records()?.iter())
@@ -2405,8 +2401,9 @@ pub(super) fn session_action(
     }
     let (_session, mut record) = dispatch_lock::acquire(name)?;
     scope.check(&record)?;
-    if retirement::pending(&record) {
-        return Err(retirement::RESTORE_PENDING.into());
+    if retirement::ready(&mut record)? && action == "resume" {
+        scope.result_record(&record);
+        return Ok(());
     }
     let expected = record.clone();
     if let Some(new) = new_name {
@@ -2569,8 +2566,11 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
     } else {
         (None, binding(name)?)
     };
-    if session.is_some() && retirement::pending(&record) {
-        return Err(retirement::RESTORE_PENDING.into());
+    if session.is_some() {
+        if args.iter().any(|arg| arg == "--dry-run") && retirement::pending(&record) {
+            return Err(retirement::RESTORE_PENDING.into());
+        }
+        if retirement::ready(&mut record)? && command == "resume" { return Ok(0); }
     }
     let mut expected = record.clone();
     match command {

@@ -136,7 +136,8 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
     let cleanup_pending = clear_context::cleanup_pending(record);
     let restore_pending = !string(record, "restore_archive_id").is_empty() || cleanup_pending;
     let name = string(record, "name");
-    let restorable = archived && recipe && !cleanup_pending && if native_archive {
+    let native_pending = native_archive && dsh::retirement::restore_source_held(record) == Ok(true);
+    let restorable = native_pending || archived && recipe && !cleanup_pending && if native_archive {
         dsh::retirement::restore_name_busy(name) == Ok(false)
     } else {
         !record_path(name).exists()
@@ -159,14 +160,14 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
             !archived && !live_pane && !changing && confirmed && recipe && !cleanup_pending,
         ),
         ("archive", !archived && !live_pane && !changing && confirmed && !cleanup_pending),
-        ("rename", !changing),
+        ("rename", !changing && !native_pending),
         (
             "fork",
             !changing && fork::summary(record, live_pane)["fork_supported"] == true,
         ),
         ("terminate", !archived),
         ("restore", restorable && conversation),
-        ("forget", !changing && !restore_pending),
+        ("forget", !changing && !restore_pending && !native_pending),
     ];
     let mut allowed = Vec::new();
     let mut reasons = serde_json::Map::new();
@@ -192,7 +193,11 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
             );
         }
     }
-    json!({"allowed_actions":allowed,"action_reasons":reasons})
+    let mut result = json!({"allowed_actions":allowed,"action_reasons":reasons});
+    if native_pending {
+        result["restore_pending"] = json!(true);
+    }
+    result
 }
 
 fn validate(request: &Request, name: &str) -> Result<()> {
@@ -395,7 +400,7 @@ where
     }
     // zerus-ucck P3c: the request's identities select among sessions that
     // share the label, before anything is claimed.
-    if request.archive_id.is_some() {
+    if request.archive_id.is_some() && name.starts_with("dsh/") {
         let _ = session_id::take_deferred(name);
     } else {
         expect(name, &request.expected_run_id, &request.expected_conversation_id)?;

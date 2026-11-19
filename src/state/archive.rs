@@ -8,6 +8,15 @@ pub(super) fn path(id: &str) -> Result<PathBuf> {
 }
 
 pub(super) fn read_archive(name: &str, id: &str) -> Result<Value> {
+    if name.starts_with("dsh/") {
+        return dsh::native_archives::by_id(id)
+            .and_then(|row| {
+                let row = row.filter(|row| row["name"] == name).ok_or("no such DeepSeek archive")?;
+                session_id::verify(&row)?;
+                Ok(row)
+            })
+            .map_err(|error| format!("{name}: cannot read archive {id}: {error}"));
+    }
     let record = archive_references::read_metadata(&path(id)?)
         .map_err(|error| format!("{name}: cannot read archive {id}: {error}"))?;
     validated_record(name, id, record)
@@ -25,8 +34,7 @@ pub(super) fn validate_record(name: &str, id: &str, record: &Value) -> Result<()
         || record["version"] != 1
         || string(record, "name") != name
         || string(record, "archive_id") != id
-        || !(AGENTS.contains(&string(record, "agent"))
-            || (record["agent"] == "dsh" && record["backend"] == "dsh"))
+        || !AGENTS.contains(&string(record, "agent"))
     {
         return Err(format!("{name}: invalid archive record {id}"));
     }
@@ -189,9 +197,7 @@ pub(super) fn save(record: &Value) -> Result<String> {
     Ok(id)
 }
 
-/// Publish an archive for a caller that has verified and locked its binding.
-/// Terminal and native providers retire the binding through their own writers.
-pub(super) fn publish(record: &Value) -> Result<String> {
+fn publish(record: &Value) -> Result<String> {
     let db = archive_catalog::writer_catalog()?;
     let existing = verified_existing(&db, record)?;
     let id = if let Some(existing) = existing {
@@ -483,7 +489,11 @@ pub(super) fn forget_scoped(name: &str, id: &str, dry: bool, scope: Option<&sess
         return Ok(());
     }
     if let Some(scope)=scope {scope.changing();}
-    remove_synced(&path(id)?)?;
+    if record["backend"] == "dsh" {
+        dsh::native_archives::remove(&record)?;
+    } else {
+        remove_synced(&path(id)?)?;
+    }
     // A lock its archive kept, once nothing else uses the checkout (P3c).
     worktree_lock::left(&record);
     Ok(())
@@ -534,13 +544,6 @@ pub(super) fn reserve_clear_source(record: &Value) -> Result<()> {
 /// Commit the restore after its exact ID, or its explicitly cleared successor.
 /// The active binding has already been synced by the caller before this runs.
 pub(super) fn confirm_restore(record: &mut Value) -> Result<()> {
-    confirm_restore_with(record, write)
-}
-
-pub(super) fn confirm_restore_with(
-    record: &mut Value,
-    persist: impl FnOnce(&mut Value) -> Result<()>,
-) -> Result<()> {
     if terminating::pending(record) {
         return Ok(());
     }
@@ -579,7 +582,7 @@ pub(super) fn confirm_restore_with(
         settled.as_object_mut().unwrap().remove("restore_archive_cleanup");
         settled.as_object_mut().unwrap().remove("clear_context_request");
     }
-    persist(&mut settled)?;
+    write(&mut settled)?;
     *record = settled;
     Ok(())
 }

@@ -1,21 +1,31 @@
 //! Archive publication and restore for DeepSeek's native per-session handle.
 use super::*;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-pub(in crate::state) const RESTORE_PENDING: &str =
-    "A native DeepSeek archive restore is still awaiting confirmation; inspect its original result";
-
-/// The native action is serialized separately. Take the local writer and try
-/// the provider lock without queueing behind a provider that needs the writer.
-fn publish<T>(write: impl FnOnce() -> Result<T>) -> Result<T> {
-    let _writer = lock(None)?;
-    let _bindings = try_bindings_lock()?;
-    write()
+pub(in crate::state) const RESTORE_PENDING: &str = "DeepSeek restore is awaiting native confirmation. Use Restore on the archive to check the original outcome";
+// The caller already holds the exact native identity. Release the state
+// writer while waiting for the provider, since some established provider
+// paths need the writer before they can release their own binding lock.
+fn write_locks() -> Result<(Guard, Guard)> {
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let _writer = storage::writer_until(until)?.ok_or("DeepSeek state writer is busy")?;
+        if let Some(bindings) =
+            storage::lock_until(&root().join("dsh/bindings.lock"), Instant::now())?
+        {
+            return Ok((_writer, bindings));
+        }
+        drop(_writer);
+        if Instant::now() >= until {
+            return Err("DeepSeek bindings are busy; the saved records were kept".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
-fn try_bindings_lock() -> Result<Guard> {
-    storage::lock_until(&root().join("dsh/bindings.lock"), Instant::now())?
-        .ok_or_else(|| "DeepSeek bindings are busy; the saved records were kept".into())
+fn publish<T>(write: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _locks = write_locks()?;
+    write()
 }
 
 pub(in crate::state) fn restore_name_busy(name: &str) -> Result<bool> {
@@ -27,14 +37,17 @@ pub(in crate::state) fn restore_source_held(record: &Value) -> Result<bool> {
     if PROVIDER.vacant(name)? {
         return Ok(false);
     }
-    Ok(binding(name)?["restore_archive_id"] == record["archive_id"])
+    let current = binding(name)?;
+    Ok(current["restore_archive_id"] == record["archive_id"]
+        && current["session_id"] == record["session_id"]
+        && current["conversation_id"] == record["conversation_id"])
 }
 
 pub(in crate::state) fn pending(record: &Value) -> bool {
     let id = string(record, "restore_archive_id");
     !id.is_empty()
         && (!string(record, "expected_id").is_empty()
-            || archive::path(id).map_or(true, |path| !matches!(path.try_exists(), Ok(false))))
+            || !matches!(native_archives::contains(id), Ok(false)))
 }
 
 fn view(record: &Value) -> Result<Value> {
@@ -69,7 +82,7 @@ pub(super) fn dispatch(
         }
         _ => return Err(format!("usage: hgs {command} <session>")),
     };
-    let (_identity, record) = dispatch_lock::acquire(name)?;
+    let (_identity, mut record) = dispatch_lock::acquire(name)?;
     terminating::check_mutation(&record)?;
     if let Some(scope) = scope {
         scope.check(&record)?;
@@ -77,9 +90,10 @@ pub(super) fn dispatch(
     if expected_run.is_some_and(|run| run != string(&record, "run_id")) {
         return Err("DeepSeek session changed before termination; refresh and retry".into());
     }
-    if pending(&record) {
+    if dry && pending(&record) {
         return Err(RESTORE_PENDING.into());
     }
+    ready(&mut record)?;
 
     let mut inspected = view(&record)?;
     let running = inspected["live"] == true;
@@ -116,10 +130,7 @@ pub(super) fn dispatch(
     }
 
     let mut completed = record.clone();
-    completed
-        .as_object_mut()
-        .unwrap()
-        .remove("restore_archive_id");
+    clear_restore_fields(&mut completed);
     completed["version"] = json!(1);
     completed["native_archive_through_seq"] = inspected["baseline"]["asOfSeq"].clone();
     completed["completion_source"] = json!(if command == "terminate" {
@@ -133,8 +144,7 @@ pub(super) fn dispatch(
         "user_archived"
     });
     let id = {
-        let _writer = lock(None)?;
-        let bindings = try_bindings_lock()?;
+        let (_writer, bindings) = write_locks()?;
         if binding(name)? != record {
             return Err(
                 "DeepSeek binding changed before archiving; the saved binding was kept".into(),
@@ -143,7 +153,7 @@ pub(super) fn dispatch(
         if let Some(scope) = scope {
             scope.changing();
         }
-        let id = archive::publish(&completed)?;
+        let id = native_archives::publish(&completed)?;
         remove(&record)?;
         drop(bindings);
         worktree_lock::left(&record);
@@ -196,25 +206,24 @@ pub(in crate::state) fn restore(
                 "{name}: a live or saved session already uses this name"
             ));
         }
-        if !string(&record, "expected_id").is_empty() {
-            return Err(RESTORE_PENDING.into());
-        }
         Ok(Some(record))
     })?;
     if let Some(mut record) = existing {
-        if !dry {
-            publish(|| {
-                check_source()?;
-                if binding(name)? != record {
-                    return Err("DeepSeek restore binding changed; refresh and retry".into());
-                }
-                if let Some(scope) = scope {
-                    scope.changing();
-                }
-                archive::confirm_restore_with(&mut record, save)
-            })?;
-            restored(scope, &record, id);
+        if dry {
+            return Err(RESTORE_PENDING.into());
         }
+        let outcome = outcome(&record)?.ok_or(RESTORE_PENDING)?;
+        if let Some(scope) = scope {
+            scope.changing();
+        }
+        settle(&mut record, outcome)?;
+        if outcome == Outcome::Refused {
+            if let Some(scope) = scope {
+                scope.unchanged();
+            }
+            return Err("The earlier DeepSeek restore did not start. The archive is available for a new Restore".into());
+        }
+        restored(scope, &record, id);
         return Ok(0);
     }
 
@@ -256,6 +265,7 @@ pub(in crate::state) fn restore(
     }
     record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
     record["restore_archive_id"] = json!(id);
+    record["restore_host_generation"] = inspected["generation"].clone();
     record["expected_id"] = archived["conversation_id"].clone();
     record["paused"] = json!(true);
     publish(|| {
@@ -271,39 +281,172 @@ pub(in crate::state) fn restore(
         save(&mut record)
     })?;
 
-    let outcome = native_lifecycle_action(
+    match native_lifecycle_action(
         &record,
         "resume",
         &inspected,
-        json!({"permissionMode":plan.mode}),
+        json!({"permissionMode":plan.mode,"requestId":record["run_id"]}),
         scope,
-    );
-    if let Err(error) = outcome {
-        if error.definite {
-            publish(|| {
-                if binding(name)? != record {
-                    return Err("DeepSeek restore binding changed; the archive was kept".into());
-                }
-                remove(&record)
-            })?;
+    ) {
+        Ok(()) => {
+            remember(&record, Outcome::Resumed)?;
+            settle(&mut record, Outcome::Resumed)?;
+            restored(scope, &record, id);
+            Ok(0)
+        }
+        Err(error) => {
+            if !error.definite {
+                return Err(RESTORE_PENDING.into());
+            }
+            remember(&record, Outcome::Refused)?;
+            settle(&mut record, Outcome::Refused)?;
             if let Some(scope) = scope {
                 scope.unchanged();
             }
+            Err(error.message)
         }
-        return Err(error.message);
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Outcome {
+    Resumed,
+    Refused,
+}
+
+fn proof_path(record: &Value) -> Result<PathBuf> {
+    let run = string(record, "run_id");
+    if !session_id::canonical(run) {
+        return Err("Invalid DeepSeek restore run".into());
+    }
+    Ok(root()
+        .join("dsh/restore-outcomes")
+        .join(format!("{run}.json")))
+}
+
+fn proof(record: &Value, outcome: Outcome) -> Value {
+    json!({"archive_id":record["restore_archive_id"], "run_id":record["run_id"],
+         "session_id":record["session_id"], "conversation_id":record["conversation_id"],
+         "generation":record["restore_host_generation"],
+         "status":if outcome == Outcome::Resumed { "resumed" } else { "refused" }})
+}
+
+// Keep an exact acknowledgement even when the provider lock is busy for
+// longer than our writer wait. The per-conversation guard covers this file.
+fn remember(record: &Value, outcome: Outcome) -> Result<()> {
+    atomic(&proof_path(record)?, &proof(record, outcome).to_string())
+}
+
+fn outcome(record: &Value) -> Result<Option<Outcome>> {
+    if string(record, "expected_id").is_empty() {
+        return Ok(Some(Outcome::Resumed));
+    }
+    if let Some(raw) =
+        labels::read_file(&proof_path(record)?, 4096).map_err(|error| error.to_string())?
+    {
+        let saved: Value = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
+        for result in [Outcome::Resumed, Outcome::Refused] {
+            if saved == proof(record, result) {
+                return Ok(Some(result));
+            }
+        }
+        return Err("DeepSeek restore acknowledgement identity changed".into());
+    }
+    let generation = string(record, "restore_host_generation");
+    if generation.is_empty() {
+        return Ok(None);
+    }
+    let request = json!({"sessionId": record["conversation_id"], "generation": generation,
+                        "requestId": record["run_id"]});
+    if let Ok(observed) = rpc_within(
+        record,
+        "session-resume-status",
+        request,
+        Duration::from_secs(2),
+    ) {
+        if observed["sessionId"] == record["conversation_id"]
+            && observed["requestId"] == record["run_id"]
+            && observed["generation"] == generation
+        {
+            if observed["status"] == "failed" {
+                return Ok(Some(Outcome::Refused));
+            }
+            if observed["status"] == "completed" {
+                return Ok(Some(Outcome::Resumed));
+            }
+        }
+    }
+    // An older resident adapter has no receipt read. Its exact owned live
+    // handle in the original generation is still a positive proof. Silence,
+    // an opening handle, or a stopped session could precede the original RPC.
+    let view = rpc_within(
+        record,
+        "inspect",
+        json!({"sessionId":record["conversation_id"],"includeProcesses":false}),
+        Duration::from_secs(2),
+    );
+    Ok(view
+        .ok()
+        .filter(|view| {
+            view["generation"] == generation
+                && view["live"] == true
+                && view["owned"] == true
+                && offers(view, "forget")
+        })
+        .map(|_| Outcome::Resumed))
+}
+
+fn clear_restore_fields(record: &mut Value) {
+    let fields = record.as_object_mut().unwrap();
+    fields.remove("restore_archive_id");
+    fields.remove("restore_host_generation");
+}
+
+fn settle(record: &mut Value, result: Outcome) -> Result<()> {
+    let name = string(record, "name").to_owned();
+    let id = string(record, "restore_archive_id").to_owned();
     publish(|| {
-        check_source()?;
-        if binding(name)? != record {
+        if binding(&name)? != *record {
             return Err("DeepSeek restore binding changed; the archive was kept".into());
         }
-        record.as_object_mut().unwrap().remove("expected_id");
-        record["paused"] = json!(false);
-        save(&mut record)?;
-        archive::confirm_restore_with(&mut record, save)
-    })?;
-    restored(scope, &record, id);
-    Ok(0)
+        let source = native_archives::by_id(&id)?;
+        if source.as_ref().is_some_and(|source| {
+            source["name"] != name
+                || source["conversation_id"] != record["conversation_id"]
+                || source["session_id"] != record["session_id"]
+        }) {
+            return Err("DeepSeek restore source identity changed".into());
+        }
+        if source.is_none() && !string(record, "expected_id").is_empty() {
+            return Err("DeepSeek restore source is unavailable".into());
+        }
+        if result == Outcome::Refused {
+            remove(record)?;
+        } else {
+            record.as_object_mut().unwrap().remove("expected_id");
+            record["paused"] = json!(false);
+            save(record)?;
+            if let Some(source) = source {
+                native_archives::remove(&source)?;
+            }
+            clear_restore_fields(record);
+            save(record)?;
+        }
+        let _ = fs::remove_file(proof_path(record)?);
+        Ok(())
+    })
+}
+
+pub(super) fn ready(record: &mut Value) -> Result<bool> {
+    if !pending(record) {
+        return Ok(false);
+    }
+    let result = outcome(record)?.ok_or(RESTORE_PENDING)?;
+    settle(record, result)?;
+    if result == Outcome::Refused {
+        return Err("The earlier DeepSeek restore did not start. The archive is available for a new Restore".into());
+    }
+    Ok(true)
 }
 
 fn restored(scope: Option<&session_action::Scope>, record: &Value, archive_id: &str) {
@@ -331,7 +474,8 @@ pub(in crate::state) fn inspect(record: &Value, after: i64) -> Result<Value> {
     detail["archived_at"] = record["archived_at"].clone();
     detail["completion_source"] = record["completion_source"].clone();
     detail["completion_reason"] = record["completion_reason"].clone();
-    detail["restore_name_busy"] = json!(restore_name_busy(name)?);
+    let held = restore_source_held(record)?;
+    detail["restore_name_busy"] = json!(restore_name_busy(name)? && !held);
     detail["terminal_reason"] = json!(backend::DEEPSEEK_TERMINAL.text());
     detail["pending_questions"] = json!([]);
     match rpc(

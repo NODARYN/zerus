@@ -900,7 +900,9 @@ fn matches_reference(reference: &crate::session_reference::Reference, record: &V
 pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference) -> Result<String> {
     local_sessions()?;
     let _guard = lock(None)?;
-    let mut candidates = if reference.archive.is_empty() { records()? } else { archive::records()? };
+    let mut candidates = if reference.archive.is_empty() { records()? }
+        else if reference.name.starts_with("dsh/") { dsh::native_archives::by_id(&reference.archive)?.into_iter().collect() }
+        else { archive::records()? };
     if reference.archive.is_empty() { candidates.extend(dsh::snapshots()?); candidates.extend(opencode::snapshots()?); }
     let mut matching = candidates.iter().filter(|record| matches_reference(reference, record));
     let first = matching.next().ok_or("The referenced conversation is no longer bound to a saved session; it may have been cleared or forgotten")?;
