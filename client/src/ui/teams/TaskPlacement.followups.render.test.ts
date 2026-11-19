@@ -65,7 +65,7 @@ it("names roles, pipelines and members in the catalog's Russian terms", async ()
   const { host } = mount(pending);
   button(host, "route").click();
   const form = host.querySelector('[data-placement-form="route"]')!;
-  const roles = [...form.querySelectorAll<HTMLOptionElement>("select")[0].options].map((option) => option.textContent);
+  const roles = [...form.querySelectorAll<HTMLSelectElement>("select")[0].options].map((option) => option.textContent);
   expect(roles).toEqual(["Выберите роль", "Разработчик", "Ревьюер"]);
   expect(form.querySelectorAll<HTMLSelectElement>("select")[1].options[0].textContent).toBe("Выберите конвейер");
   expect(form.textContent).not.toMatch(/процесс/i);
