@@ -50,6 +50,25 @@ class ArchiveRestoreSource(pause.Harness):
         self.script("tmux", TERMINAL.replace("__TMUX__", repr(pause.TMUX))
                     .replace("__SOCKET__", repr(self.socket)))
 
+    def assert_restore_hint_tracks_name_reuse(self):
+        name, _, selected = self.save_archive()
+        self.assertIn("restore", selected["allowed_actions"])
+        self.assertEqual(self.start(), name)
+        # A saved occupant has no terminal. The listing must see its binding.
+        self.hgs("pause", name)
+        self.assertTrue(self.binding(name))
+        rows = self.archived(name)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["archive_id"], selected["archive_id"])
+        self.assertNotIn("restore", rows[0]["allowed_actions"])
+
+    def test_archive_listing_restore_hint_tracks_name_reuse(self):
+        self.assert_restore_hint_tracks_name_reuse()
+
+    def test_canonical_archive_listing_restore_hint_tracks_name_reuse(self):
+        self.hgs("listing-index", "disable", "--json")
+        self.assert_restore_hint_tracks_name_reuse()
+
     def test_changed_archive_with_same_run_and_conversation_refuses_before_start(self):
         name, _, selected = self.save_archive()
         archive = self.root / "state/archives" / (selected["archive_id"] + ".json")

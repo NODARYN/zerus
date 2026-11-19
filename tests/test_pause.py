@@ -3969,15 +3969,30 @@ class Archive(Harness):
         # metadata worker never starts an agent or changes the selected source.
         if not LEGACY_STATE:
             self.hgs("__state", "archive-catalog-worker")
-        pages = []
-        def ready():
-            page = json.loads(self.hgs("ls", "--local", "--json"))
-            if page.get("archive_page", {}).get("catalog_complete") is False:
-                return False
-            pages.append(page)
-            return True
-        self.wait(ready)
-        return [row for row in pages[0]["sessions"] if name is None or row["name"] == name]
+        # The first Linux listing starts the independent display writer. A
+        # cold or invalidated cut refuses with no body until it is complete.
+        pending = {
+            "hgs: Missing private file",
+            "hgs: Listing metadata is still rebuilding",
+            "hgs: Session listing is building, stale or unavailable; no complete body returned",
+            "hgs: Session listing changed before publication; no complete body returned",
+        }
+        deadline = time.monotonic() + 6
+        last = ""
+        while (remaining := deadline - time.monotonic()) > 0:
+            result = subprocess.run([str(HGS), "ls", "--local", "--json"], env=self.env,
+                                    capture_output=True, text=True, timeout=remaining)
+            if result.returncode == 0:
+                page = json.loads(result.stdout)
+                if page.get("archive_page", {}).get("catalog_complete") is not False:
+                    return [row for row in page["sessions"] if name is None or row["name"] == name]
+                last = "archive catalog coverage is incomplete"
+            else:
+                last = result.stderr.strip()
+                if result.returncode != 1 or result.stdout or last not in pending:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            time.sleep(min(.05, max(0, deadline - time.monotonic())))
+        self.fail(f"Complete archive listing did not become ready: {last}")
 
     def archived(self, name=None):
         return [row for row in self.rows(name) if row.get("state") == "archived"]

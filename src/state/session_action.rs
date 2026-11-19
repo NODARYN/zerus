@@ -124,7 +124,13 @@ pub(super) const NO_CONVERSATION: &str =
 
 /// A presentation gate, never a substitute for the locked action checks.
 /// `resumed` is the summary's single verification of a pending resume.
-pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<()>>) -> Value {
+/// Ordinary listing supplies name availability from its bounded observation.
+pub(super) fn summary(
+    record: &Value,
+    live_pane: bool,
+    resumed: &Option<Result<()>>,
+    archive_name_taken: Option<bool>,
+) -> Value {
     let archived = !string(record, "archive_id").is_empty();
     let terminating = terminating::pending(record);
     let changing = record.get("pausing").is_some() || record["resume_pending"] == true;
@@ -139,11 +145,15 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
     let restore_pending = !string(record, "restore_archive_id").is_empty() || cleanup_pending;
     let name = string(record, "name");
     let native_pending = native_archive && dsh::retirement::restore_source_held(record) == Ok(true);
-    let restorable = native_pending || archived && recipe && !cleanup_pending && if native_archive {
-        dsh::retirement::restore_name_busy(name) == Ok(false)
-    } else {
-        !record_path(name).exists()
-    };
+    let restorable = native_pending
+        || archived
+            && recipe
+            && !cleanup_pending
+            && if native_archive {
+                dsh::retirement::restore_name_busy(name) == Ok(false)
+            } else {
+                !archive_name_taken.unwrap_or_else(|| record_path(name).exists())
+            };
     // The restore's own history check decides, through the shared code:
     // one bounded metadata read, only for a Claude or Codex archive that
     // may otherwise restore (zerus-63rru.70). Kimi, DeepSeek and OpenCode
