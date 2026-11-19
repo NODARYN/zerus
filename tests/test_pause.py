@@ -3975,7 +3975,9 @@ class Archive(Harness):
             "hgs: Missing private file",
             "hgs: Listing metadata is still rebuilding",
             "hgs: Session listing is building, stale or unavailable; no complete body returned",
+            "hgs: Session listing changed before publication",
             "hgs: Session listing changed before publication; no complete body returned",
+            "hgs: Session listing membership changed before publication",
         }
         deadline = time.monotonic() + 6
         last = ""
