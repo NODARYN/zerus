@@ -245,11 +245,9 @@ pub(in crate::state) fn restore(
         return Ok(0);
     }
 
+    worktree_lifecycle::restore(archived)?;
     let mut record = archived.clone();
-    if let Some(owner) = worktree_lifecycle::restore(archived)? {
-        record["worktree_owner"] = owner;
-        record["launch_dir"] = archived["cwd"].clone();
-    }
+    capture_worktree(&mut record, Path::new(string(archived, "cwd")));
     for key in [
         "archive_id",
         "archived_at",

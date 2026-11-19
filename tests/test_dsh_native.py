@@ -1365,9 +1365,19 @@ class NativeHarness(unittest.TestCase):
         detail = self.hgs('inspect', subject['name'], '--archive', archive)
         self.assertEqual(detail.returncode, 0, detail.stderr)
         self.assertIn('restore', json.loads(detail.stdout)['allowed_actions'])
+
+        def refuse_resume(request, forward):
+            if request['method'] == 'session-action' and request['params'].get('action') == 'resume':
+                request['params']['permissionMode'] = 'invalid-fixture-mode'
+            return forward(request)
+
+        with self.archive_rpc_proxy(refuse_resume):
+            refused = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(refused['status'], 'failed', refused)
+        self.assertTrue(checkout.is_dir(), 'the checkout was recreated before native admission')
+        self.assertEqual(self.archive_row(subject), archive)
         restored = self.scoped_archive_action(subject, 'restore', archive_id=archive)
         self.assertEqual(restored['status'], 'completed', restored)
-        self.assertTrue(checkout.is_dir())
         binding = self.bindings()[subject['name']]
         self.assertEqual(binding['conversation_id'], subject['conversation_id'])
         self.assertNotEqual(binding['worktree_owner']['id'], row['ownership_id'])

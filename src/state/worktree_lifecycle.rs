@@ -26,17 +26,13 @@ pub(super) fn receipt_path_in(state: &Path, common: &Path, path: &Path) -> PathB
 }
 
 pub(super) fn created(common: &Path, path: &Path, branch: &str, head: &str) -> Result<()> {
-    create_owner(common, path, branch, head).map(drop)
-}
-
-fn create_owner(common: &Path, path: &Path, branch: &str, head: &str) -> Result<Value> {
     let metadata = git(
         path,
         &["rev-parse", "--absolute-git-dir"],
         Instant::now() + Duration::from_secs(3),
     )
     .map_err(|e| e.detail)?;
-    created_at(common, path, branch, head, &metadata)
+    created_at(common, path, branch, head, &metadata).map(drop)
 }
 
 /// `metadata` is the checkout's `rev-parse --absolute-git-dir` output. The
@@ -231,10 +227,10 @@ pub(super) fn restorable(record: &Value) -> bool {
 
 /// Restore is an explicit launch operation, never triggered by browsing an
 /// archive. Refuse branch changes, existing destinations and all uncertain cases.
-pub(super) fn restore(record: &Value) -> Result<Option<Value>> {
+pub(super) fn restore(record: &Value) -> Result<()> {
     let folder = archive_folder(record);
     if folder.is_dir() {
-        return Ok(None);
+        return Ok(());
     }
     if !restorable(record) {
         return Err(format!(
@@ -321,12 +317,12 @@ pub(super) fn restore(record: &Value) -> Result<Option<Value>> {
         );
     }
     // Re-establish ownership for the new Git metadata instance. Keep branch/head.
-    let ownership = create_owner(common, path, branch, string(cleanup, "head"))?;
+    created(common, path, branch, string(cleanup, "head"))?;
     let _ = fs::remove_file(cache);
     if !folder.is_dir() {
         return Err("Original session subfolder is unavailable in the restored worktree".into());
     }
-    Ok(Some(ownership))
+    Ok(())
 }
 
 /// Archive success must never become a failed termination because cleanup was
