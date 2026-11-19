@@ -149,3 +149,82 @@ it("distinguishes testing and landing and keeps service notes beside the report"
   expect([...host.querySelectorAll("[data-evidence-verdict]")].map((element) => element.textContent)).toEqual(["Одобрено: m3", "Вердикта пока нет"]);
   expect(host.querySelector("[data-task-evidence]")?.textContent).toContain("One private fixture note.");
 });
+
+// Delta review of #2531 (codex/zerus-review2531/review2531-cx), adopted: an
+// open Return form waits with the toolbar, a failed refresh removes the older
+// evidence, and evidence newer than the board blocks both decisions.
+
+it("keeps a previously opened Return draft inert until evidence matches the board", async () => {
+  const { host, actions, refresh, finish } = pendingRefresh();
+  await settle();
+  const toolbarReturn = () => host.querySelector<HTMLButtonElement>('[data-task-action="return"]')!;
+  const toolbarAccept = () => host.querySelector<HTMLButtonElement>('[data-task-action="accept"]')!;
+  const send = () => host.querySelector<HTMLButtonElement>(".team-reason button.primary")!;
+  toolbarReturn().click();
+  const draft = host.querySelector<HTMLInputElement>(".team-reason input")!;
+  draft.value = "Rewrite the first revision.";
+  draft.dispatchEvent(new Event("input", { bubbles: true }));
+  expect(send().disabled).toBe(false);
+  refresh();
+  await settle();
+  expect(host.querySelector("[data-evidence-updating]")).not.toBeNull();
+  expect(host.querySelector("[data-evidence-report]")?.textContent).toBe(product.report!.text);
+  expect(toolbarReturn().disabled).toBe(true);
+  expect(toolbarAccept().disabled).toBe(true);
+  const before = send().disabled;
+  send().click();
+  expect(actions).not.toHaveBeenCalled();
+  expect(before).toBe(true);
+  expect(draft.value).toBe("Rewrite the first revision.");
+  finish();
+  await settle();
+  expect(send().disabled).toBe(false);
+  send().click();
+  expect(actions).toHaveBeenCalledExactlyOnceWith("return", {
+    node: 1, reason: "Rewrite the first revision.",
+  });
+});
+
+it("removes the old report and verdict before a rejected refresh restores both decision buttons", async () => {
+  port.mockResolvedValueOnce(product).mockRejectedValueOnce(new Error("fixture refresh failed"));
+  const { host, actions, view, setView } = setup();
+  await settle();
+  const toolbar = () => [
+    host.querySelector<HTMLButtonElement>('[data-task-action="accept"]')!,
+    host.querySelector<HTMLButtonElement>('[data-task-action="return"]')!,
+  ];
+  expect(host.querySelector("[data-evidence-report]")).not.toBeNull();
+  expect(host.querySelector("[data-evidence-findings]")).not.toBeNull();
+  setView({ ...view(), revision: view().revision + 1 });
+  await settle();
+  expect(host.querySelector("[data-evidence-report]")).toBeNull();
+  expect(host.querySelector("[data-evidence-findings]")).toBeNull();
+  expect(host.querySelector("[data-evidence-updating]")).toBeNull();
+  expect(host.querySelector("[data-evidence-error]")?.textContent).toContain("fixture refresh failed");
+  expect(toolbar().map((button) => button.disabled)).toEqual([false, false]);
+  toolbar()[0].click();
+  expect(actions).toHaveBeenCalledExactlyOnceWith("accept", { node: 1 });
+});
+
+it("marks evidence newer than the board and blocks both decisions until the board catches up", async () => {
+  const newer = {
+    ...product, revision: product.revision + 1,
+    report: { ...product.report!, text: "Evidence from the concurrent board revision" },
+  };
+  port.mockResolvedValue(newer);
+  const { host, actions, view, setView } = setup();
+  const toolbar = () => [
+    host.querySelector<HTMLButtonElement>('[data-task-action="accept"]')!,
+    host.querySelector<HTMLButtonElement>('[data-task-action="return"]')!,
+  ];
+  await settle();
+  expect(host.querySelector("[data-evidence-report]")?.textContent).toBe(newer.report.text);
+  expect(host.querySelector("[data-evidence-updating]")).not.toBeNull();
+  expect(toolbar().map((button) => button.disabled)).toEqual([true, true]);
+  toolbar()[0].click();
+  expect(actions).not.toHaveBeenCalled();
+  setView({ ...view(), revision: newer.revision });
+  await settle();
+  expect(host.querySelector("[data-evidence-updating]")).toBeNull();
+  expect(toolbar().map((button) => button.disabled)).toEqual([false, false]);
+});
