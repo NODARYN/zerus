@@ -474,6 +474,8 @@ jobs:
         run: |
           cargo +1.99.1 build --locked --bin hgs
           cargo +1.99.1 build --locked --manifest-path services/mobile/connector/Cargo.toml --target-dir services/mobile/relay/target
+          cargo +1.99.1 build --locked --manifest-path crates/replica-ffi/Cargo.toml --example task_exchange_phone --target-dir target
+          export ZERUS_TASK_TEST_PHONE="$GITHUB_WORKSPACE/target/debug/examples/task_exchange_phone"
           export ZERUS_CONNECTOR_E2E_COMMAND="$GITHUB_WORKSPACE/services/mobile/relay/target/debug/zerus-mobile-connector"
           python3 -m venv "$RUNNER_TEMP/relay-venv"
           "$RUNNER_TEMP/relay-venv/bin/pip" install ./services/mobile -r services/mobile/tests/requirements.txt
