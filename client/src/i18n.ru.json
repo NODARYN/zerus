@@ -4139,6 +4139,7 @@
   "The selected text is on the clipboard": "Выделенный текст скопирован в буфер обмена",
   "The selection is not confirmed. Check the original action in the Team tab.": "Выбор не подтверждён. Проверьте исходное действие на вкладке команды.",
   "The service closed reopen notices that no longer need the lead's attention": "Служба закрыла уведомления о повторном открытии, которые больше не требуют внимания лида",
+  "The service confirmed that the member stopped after a provider error.": "Сервис подтвердил, что участник остановился из-за ошибки провайдера.",
   "The service recorded whether member data could be read": "Служба записала, удалось ли прочитать данные участников",
   "The session ID is on the clipboard": "ID сессии скопирован в буфер обмена",
   "The session changed. Open its actions again.": "Сессия изменилась. Откройте её действия снова.",
