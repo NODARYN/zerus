@@ -1213,3 +1213,27 @@ fn handwritten_a_stage_card_names_its_targets_earlier_implementers() {
         .get("earlier_implementers")
         .is_none());
 }
+
+/// zerus-3u5yu (6, mutant rs4 of the #2527 review): Route offers a pipeline
+/// only under a role of the team's bundle. The roles and pipelines are the
+/// built-in catalog's; the pipeline of an unknown role is hand-written.
+#[test]
+fn handwritten_routing_offers_only_pipelines_whose_implementer_is_a_bundle_role() {
+    let catalog = zerus_team_plan::builtin();
+    let mut pipelines = serde_json::to_value(&catalog.pipelines).unwrap();
+    let mut ghost = pipelines[0].clone();
+    ghost["id"] = json!("ghostly");
+    ghost["implementer"] = json!("ghost");
+    pipelines.as_array_mut().unwrap().push(ghost);
+    let mut status = fixture("status");
+    status["team"]["bundle"] = json!({"roles": catalog.roles, "pipelines": pipelines});
+    let view = super::board::team(&status, &fixture("queue"));
+    assert!(view
+        .routing_pipelines
+        .iter()
+        .any(|choice| choice.id == catalog.pipelines[0].id));
+    assert!(view
+        .routing_pipelines
+        .iter()
+        .all(|choice| choice.id != "ghostly" && choice.role != "ghost"));
+}
