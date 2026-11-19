@@ -504,6 +504,7 @@ fn dispatch(ctx: &mut Context<'_>, config: Option<&crate::config::Config>) -> Re
         Operation::ReconcileLeadQueue => lead_queue::reconcile(ctx),
         Operation::ReleaseProviderStop { .. } => provider_stop::release(ctx),
         Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
+        Operation::RecordMemberReadability { .. } => unstaffed::record_readability(ctx),
         Operation::EndStaleUnstaffed => unstaffed::end_stale(ctx),
         Operation::CloseStaleReopenNotices => talk::close_stale_reopen_notices(ctx),
         Operation::SettleLeftHandout { .. } => members::settle_left(ctx),
