@@ -64,3 +64,13 @@ it("reads a whole task number and never turns an 11-digit number into a shorter 
   expect(links.map((link) => link.textContent)).toEqual(["#6"]);
   expect(host.querySelector(".team-drawer-text")?.textContent).toBe(body);
 });
+
+it("handwritten_a_number_with_a_leading_zero_or_zero_is_not_a_task_link", () => {
+  const body = "See #007 and #0, then #7.";
+  const existing = (drawers.cards as { rows: DrawerRow[] }).rows.find((candidate) => candidate.card)!;
+  const row = { ...existing, card: { ...existing.card!, text: body } };
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => createComponent(ProposalCards, { rows: [row], busy: false, onAction: () => {}, team: view.bar.id }), host);
+  expect([...host.querySelectorAll("[data-card-node]")].map((link) => link.textContent)).toEqual(["#7"]);
+  expect(host.querySelector(".team-drawer-text")?.textContent).toBe(body);
+});
