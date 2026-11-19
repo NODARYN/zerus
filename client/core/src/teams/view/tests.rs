@@ -1170,3 +1170,46 @@ fn regenerate_pending_board_view() {
     )
     .unwrap();
 }
+
+/// zerus-3u5yu (5): a stage card standing alone (its target is outside the
+/// page) names its target's earlier implementers from the row, whom the
+/// stage's Reassign refuses; an empty or overlong name is dropped. The rows
+/// are the command line's own current product fixture; the earlier
+/// implementers and the missing target are hand-written.
+#[test]
+fn handwritten_a_stage_card_names_its_targets_earlier_implementers() {
+    let status: Value = serde_json::from_str(include_str!(
+        "../../../../../crates/team-plan/fixtures/cli-status.json"
+    ))
+    .unwrap();
+    let mut queue: Value = serde_json::from_str(include_str!(
+        "../../../../../crates/team-plan/fixtures/cli-queue.json"
+    ))
+    .unwrap();
+    let rows = queue["rows"].as_array_mut().unwrap();
+    rows.retain(|row| row["kind"] == "stage");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["earlier_implementers"], json!([]));
+    rows[0]["earlier_implementers"] = json!(["m1", "", "x".repeat(NAME_CHARS + 1), "m2"]);
+    let view = super::board::team(&status, &queue);
+    let card = view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .find(|card| card.kind == Some(RowKind::Stage))
+        .expect("the stage stands alone");
+    assert_eq!(card.earlier_implementers, ["m1", "m2"]);
+    // A task card names none, and its view omits the field.
+    let tasks = super::board::team(&status, &fixture("queue"));
+    let task = tasks
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .next()
+        .unwrap();
+    assert!(task.earlier_implementers.is_empty());
+    assert!(serde_json::to_value(task)
+        .unwrap()
+        .get("earlier_implementers")
+        .is_none());
+}
