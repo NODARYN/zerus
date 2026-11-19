@@ -52,3 +52,15 @@ it("handwritten_a_cards_task_numbers_open_those_tasks", () => {
   expect(openTeamNode()).toEqual({ team: view.bar.id, node: 6 });
   expect(closed).toHaveBeenCalledOnce();
 });
+
+// Review of #2535, adopted: the whole decimal token is read before the range check.
+it("reads a whole task number and never turns an 11-digit number into a shorter task link", () => {
+  const body = "Task #12345678901 is outside the range. Check task #6.";
+  const existing = (drawers.cards as { rows: DrawerRow[] }).rows.find((candidate) => candidate.card)!;
+  const row = { ...existing, card: { ...existing.card!, text: body } };
+  const host = document.createElement("div"); document.body.append(host);
+  dispose = render(() => createComponent(ProposalCards, { rows: [row], busy: false, onAction: () => {}, team: view.bar.id }), host);
+  const links = [...host.querySelectorAll<HTMLButtonElement>("[data-card-node]")];
+  expect(links.map((link) => link.textContent)).toEqual(["#6"]);
+  expect(host.querySelector(".team-drawer-text")?.textContent).toBe(body);
+});

@@ -10,9 +10,11 @@ import { setOpenTeamNode } from "./openNode";
 
 /** A card's text with each "#N" as a link that opens task N on the board (G15). */
 function CardText(props: { text: string; team?: string; onOpenNode?: () => void }) {
-  const parts = () => props.text.split(/(#[1-9][0-9]{0,9})/);
+  // The whole decimal token is read first; one that is not a task number
+  // (leading zero, too long, beyond the node range) stays plain text.
+  const parts = () => props.text.split(/(#\d+)/);
   return <pre class="team-drawer-text"><For each={parts()}>{(part, at) => {
-    const node = at() % 2 === 1 ? Number(part.slice(1)) : 0;
+    const node = at() % 2 === 1 && /^#[1-9]\d{0,9}$/.test(part) ? Number(part.slice(1)) : 0;
     return props.team && node > 0 && node <= 0xffffffff
       ? <button type="button" class="team-member-link team-card-node" data-card-node={node} title={tr("Open task #%1", node)}
           onClick={() => { setOpenTeamNode({ team: props.team!, node }); props.onOpenNode?.(); }}>{part}</button>
