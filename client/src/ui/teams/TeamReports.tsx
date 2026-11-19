@@ -5,7 +5,7 @@ import { tr } from "../../i18n";
 import { TextInput } from "../lib/TextField";
 import type { DrawerRow } from "../../store/teamDrawers";
 import { providerStopNote, waitingNote } from "./decisions";
-import { actorLabel, itemState, reportRows } from "./feed";
+import { actorLabel, inboxText, itemState, reportRows } from "./feed";
 
 export type DrawerAction = (kind: string, fields: Record<string, unknown>) => void;
 
@@ -35,7 +35,7 @@ export function InboxText(props: { row: DrawerRow }) {
   };
   const remaining = () => props.row.notes.filter((note) => note !== localized()?.note);
   return <>
-    <pre class="team-drawer-text">{localized()?.text ?? props.row.text}</pre>
+    <pre class="team-drawer-text">{localized()?.text ?? inboxText(props.row)}</pre>
     <Show when={localized() && props.row.kind === "report"}>
       <pre class="team-drawer-text">{quote()}</pre>
     </Show>
