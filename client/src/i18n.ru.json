@@ -4198,6 +4198,7 @@
   "The task was created; whether %1 queued it is not known. Send to team queues it now, and never twice.": "Задача создана; поставила ли её команда %1 в очередь, неизвестно. «Отправить команде» поставит её сейчас, и не дважды.",
   "The task's previous decision has not settled yet.": "Предыдущее решение по задаче ещё не выполнено.",
   "The team and phase revisions differ. Read again before reviewing the roster.": "Версии команды и фазы различаются. Прочитайте данные ещё раз перед проверкой состава.",
+  "The team changed after you opened this form. Review the choices, then use Review again.": "Команда изменилась после того, как вы открыли эту форму. Проверьте выбранные значения и нажмите «Проверить снова».",
   "The team changed. Read its provider configuration again.": "Команда изменилась. Прочитайте конфигурацию её провайдеров заново.",
   "The team changed; the settings were reloaded": "Команда изменилась; настройки загружены заново",
   "The team could not be read. Nothing was sent.": "Не удалось прочитать команду. Ничего не отправлено.",

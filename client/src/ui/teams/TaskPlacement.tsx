@@ -22,6 +22,8 @@ export function TaskPlacement(props: {
   const [reason, setReason] = createSignal("");
   const [role, setRole] = createSignal("");
   const [pipeline, setPipeline] = createSignal("");
+  /** The team revision the person reviewed the open form against (review of #2548). */
+  const [reviewed, setReviewed] = createSignal(0);
   // The form belongs to one task of one team: a refreshed card of the same task
   // keeps it open (zerus-3u5yu 7), only another task or team closes it.
   const scope = createMemo(() => `${props.view.bar.id}:${props.task.node}`);
@@ -71,12 +73,16 @@ export function TaskPlacement(props: {
     setReason("");
     setRole(roles().includes(props.task.role) ? props.task.role : "");
     setPipeline(pipelines().some((choice) => choice.id === props.task.pipeline) ? props.task.pipeline : "");
+    setReviewed(props.view.revision);
     setDraft({ kind, scope: scope() });
   };
-  // The open form follows the team: its choices are the current ones, and a
-  // submit binds the revision current at that moment, as Return and Cancel do;
-  // the native review checks the facts again (zerus-3u5yu 7).
-  const formBlocked = (current: NonNullable<ReturnType<typeof draft>>) => blocked(current.kind);
+  // The open form stays open across other team writes and keeps its choices
+  // (zerus-3u5yu 7), but it sends only the revision the person reviewed. A newer
+  // revision marks it stale until Review again binds the current one, so a
+  // draft is never sent against facts the person has not seen (review of #2548).
+  const stale = () => reviewed() !== props.view.revision;
+  const formBlocked = (current: NonNullable<ReturnType<typeof draft>>) => blocked(current.kind)
+    ?? (stale() ? tr("The team changed after you opened this form. Review the choices, then use Review again.") : undefined);
   const valid = (kind: Placement) => kind === "reassign"
     ? !!reason().trim() && members().some((seat) => seat.id === member())
     : pipelines().some((choice) => choice.id === pipeline());
@@ -90,7 +96,7 @@ export function TaskPlacement(props: {
       ? { node, member: member(), reason: reason() }
       : { node, role: role(), pipeline: pipeline(), keep_task_fields: true };
     setDraft(undefined);
-    props.onAction(current.kind, fields, props.view.revision, props.view.bar.id);
+    props.onAction(current.kind, fields, reviewed(), props.view.bar.id);
   };
 
   return <>
@@ -107,6 +113,8 @@ export function TaskPlacement(props: {
         <span class="team-action-why dim">{tr("Reassign replaces the pending decision.")}</span>
       </Show>
     </div>
+    {/* A refreshed view rebuilds the option lists; each option carries its own
+        selected state so the form keeps showing the choice it will send. */}
     <Show when={draft()} keyed>{(current) =>
       <form class="team-reason" data-placement-form={current.kind} onSubmit={submit}>
         <Show when={current.kind === "reassign"} fallback={<>
@@ -114,14 +122,14 @@ export function TaskPlacement(props: {
             <span class="team-block">{tr("Role")}</span>
             <select class="field" value={role()} onChange={(event) => { setRole(event.currentTarget.value); setPipeline(""); }}>
               <option value="">{tr("Choose a role")}</option>
-              <For each={roles()}>{(id) => <option value={id}>{roleLabel(id) !== id ? roleLabel(id) : props.view.member_roles?.find((item) => item.id === id)?.name || id}</option>}</For>
+              <For each={roles()}>{(id) => <option value={id} selected={id === role()}>{roleLabel(id) !== id ? roleLabel(id) : props.view.member_roles?.find((item) => item.id === id)?.name || id}</option>}</For>
             </select>
           </label>
           <label class="team-block">
             <span class="team-block">{tr("Pipeline")}</span>
             <select class="field" value={pipeline()} disabled={!role()} onChange={(event) => setPipeline(event.currentTarget.value)}>
               <option value="">{tr("Choose a pipeline")}</option>
-              <For each={pipelines()}>{(choice) => <option value={choice.id}>{choice.name || choice.id}</option>}</For>
+              <For each={pipelines()}>{(choice) => <option value={choice.id} selected={choice.id === pipeline()}>{choice.name || choice.id}</option>}</For>
             </select>
           </label>
           <Show when={props.task.assignee && role() && role() !== props.task.role}>
@@ -132,7 +140,7 @@ export function TaskPlacement(props: {
             <span class="team-block">{tr("Replacement member")}</span>
             <select class="field" value={member()} onChange={(event) => setMember(event.currentTarget.value)}>
               <option value="">{tr("Choose a member")}</option>
-              <For each={members()}>{(seat) => <option value={seat.id}>{seat.id}</option>}</For>
+              <For each={members()}>{(seat) => <option value={seat.id} selected={seat.id === member()}>{seat.id}</option>}</For>
             </select>
           </label>
           <TextInput class="field" aria-label={tr("Reason")} historyKey={`team-reassign-${props.task.node}`}
@@ -140,6 +148,9 @@ export function TaskPlacement(props: {
             value={reason()} onInput={(event) => setReason(event.currentTarget.value)} />
         </Show>
         <Show when={formBlocked(current)}>{(message) => <span class="team-action-why dim" role="status">{message()}</span>}</Show>
+        <Show when={!blocked(current.kind) && stale()}>
+          <button type="button" class="btn small" data-placement-review-again onClick={() => setReviewed(props.view.revision)}>{tr("Review again")}</button>
+        </Show>
         <button type="submit" class="btn small primary" disabled={!!formBlocked(current) || !valid(current.kind)}>{tr("Review change")}</button>
         <button type="button" class="btn small" onClick={() => setDraft(undefined)}>{tr("Cancel")}</button>
       </form>

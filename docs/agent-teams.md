@@ -328,9 +328,12 @@ role stays the same and the assigned member can still take it. Changing the
 role, or a removed assigned member, clears the assignment. Both actions use
 the window's native confirmation, which lists what Route keeps and clears;
 the selected desktop service must be updated for Route if it is older. An
-open form stays open while the team changes, and its submit uses the team's
-current revision. A stage's role follows its pipeline. Routing an approved
-task requires a logged plan edit.
+open form stays open while the team changes and keeps its choices, but it
+sends only the team revision you reviewed. When another change arrives, the
+form says so and waits until you check the choices and press **Review
+again**. The service refuses a request whose revision is no longer current.
+A stage's role follows its pipeline. Routing an approved task requires a
+logged plan edit.
 
 **Add task** opens the New task form in the Tasks side panel with this team
 preselected. If a previous draft is still saving, the team choice waits for
