@@ -191,6 +191,8 @@ export function TeamWorkspace(props: {
     dismissPreview();
   };
   const card = createMemo(() => all().find((candidate) => candidate.node === selectedNode()) ?? null);
+  /** The inspector's evidence is of another revision than its decisions (review of #2531). */
+  const [evidenceUpdating, setEvidenceUpdating] = createSignal(false);
   const inspectorOpen = () => !!card() || membersOpen();
   createEffect(on(() => [narrow(), card()?.node, membersOpen()] as const, () => {
     if (!narrow() || !inspectorOpen()) return;
@@ -314,8 +316,9 @@ export function TeamWorkspace(props: {
                       </dl>
                     </Show>
                     <TaskDependencies task={shown()} status={props.view.bar.status} busy={props.busy} onSetDeps={(deps) => send("set_deps", { node: shown().node, deps })} />
-                    <TaskEvidence team={props.view.bar.id} card={shown()} revision={props.view.revision} />
+                    <TaskEvidence team={props.view.bar.id} card={shown()} revision={props.view.revision} onUpdating={setEvidenceUpdating} />
                     <TaskActions card={shown()} teamStatus={props.view.bar.status} busy={props.busy} onAction={(kind) => send(kind, { node: shown().node })}
+                      evidenceUpdating={evidenceUpdating() ? tr("The report and verdicts are being read again.") : undefined}
                       onReason={(button) => { setAsking(button); setReason(""); }} />
                     <Show when={asking()}>
                       {(button) => (

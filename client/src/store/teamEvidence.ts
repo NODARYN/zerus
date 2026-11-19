@@ -14,5 +14,7 @@ export type EvidencePort = (team: string, node: number) => Promise<TaskEvidenceV
 
 export const readTaskEvidence: EvidencePort = (team, node) => {
   if (!inTauri()) return Promise.reject(new Error("Teams need a live hgs event stream."));
-  return invoke<TaskEvidenceView>("teams_task_evidence", { team, node });
+  // An answer of no shape is a failed read, never empty evidence.
+  return Promise.resolve(invoke<TaskEvidenceView>("teams_task_evidence", { team, node }))
+    .then((answer) => answer ?? Promise.reject(new Error("The evidence answer is empty.")));
 };

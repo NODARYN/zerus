@@ -122,8 +122,11 @@ it("a new revision keeps the shown evidence until the new answer arrives", async
   await settle();
   expect(read).toHaveBeenCalledTimes(2);
   expect(host.querySelector("[data-evidence-report]")?.textContent).toBe(product.report!.text);
-  expect(host.textContent).not.toContain("Reading the evidence…");
+  // Kept readable but marked as being read again (review of #2531).
+  expect(host.querySelector("[data-task-evidence]")?.hasAttribute("data-evidence-updating")).toBe(true);
+  expect(host.querySelector("[data-evidence-reading]")?.textContent).toBe("Reading the evidence…");
   release!({ ...product, revision: product.revision + 1, report: { ...product.report!, text: "The newer report." } });
   await settle();
   expect(host.querySelector("[data-evidence-report]")?.textContent).toBe("The newer report.");
+  expect(host.querySelector("[data-evidence-reading]")).toBeNull();
 });

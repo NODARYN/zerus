@@ -6059,12 +6059,15 @@ hgs team ask|verdict < request.json
 ```
 
 `evidence --node N` reads the evidence beside one task's decision: the task's
-latest report (`generation`, the task's implementer as `member`, `commit`,
-`text` and the service's `notes`) and its stages, newest first, each with its
+latest report (`generation`; as `member`, the member that generation was handed
+to, which a later Reassign does not change, or `null` when that hand-out is
+gone; `commit`, `text` and the service's `notes`) and its stages, newest first,
+each with its
 `kind` and `round` from the team's pinned bundle, its stored `state` and its
 latest `verdict` (`generation`, the stage holder as `member`, `pass`, the
 findings as `text`), or `null` when there is none. At most 24 stages are
-returned; `more_stages` says whether older ones exist. A stage node is refused
+returned; `more_stages` says whether older ones exist. `revision` is the
+team's revision in the same read as the evidence. A stage node is refused
 with `invalid_state` (its verdict is read with its task) and an unknown task
 with `not_found`. The desktop's task inspector reads it for the task it shows.
 

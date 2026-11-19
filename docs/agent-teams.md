@@ -312,7 +312,10 @@ A task's details show its evidence above the decisions: the member's latest
 report with its commit, and each stage, newest first, with its latest verdict:
 who gave it, whether it passed or returned the work, and the findings. The
 details read it once for the task they show and again when the team changes;
-a stage shows its own facts.
+a stage shows its own facts. While the evidence on screen is of another team
+revision than the decisions, it stays readable, is marked as being read again,
+and Accept and Return wait for the matching evidence. A read that fails says
+why and leaves the decisions as they are.
 
 A card's decisions are **Admit** for a task that waits for admission,
 **Accept** and **Return** for reported work, **Hold** or **Release**, and

@@ -4106,6 +4106,7 @@
   "The removal result is unknown and will not be retried. Inspect the folder before deciding what to do next.": "Результат удаления неизвестен, повторной попытки не будет. Осмотрите папку, прежде чем решать, что делать дальше.",
   "The removal was interrupted.": "Удаление было прервано.",
   "The reply is on the clipboard": "Ответ скопирован в буфер обмена",
+  "The report and verdicts are being read again.": "Отчёт и вердикты читаются заново.",
   "The report text was shortened.": "Текст отчёта сокращён.",
   "The repository was not cloned: the request was not sent to the desktop service. Continue setup to try again.": "Репозиторий не клонирован: запрос не был отправлен в службу рабочего стола. Продолжите настройку, чтобы повторить попытку.",
   "The reserved card keeps its team": "Зарезервированная карточка сохраняет свою команду",

@@ -8,4 +8,6 @@
   .team-evidence-verdict { font-size: var(--fs-xs); font-weight: 600; color: var(--z-color-muted); }
   .team-evidence-verdict[data-pass="true"] { color: var(--z-color-status-ready); }
   .team-evidence-verdict[data-pass="false"] { color: var(--z-color-warn); }
+  /* Evidence of another revision than the decision shown, read again (review of #2531). */
+  .team-evidence-updating .team-evidence-item { opacity: .6; }
 }

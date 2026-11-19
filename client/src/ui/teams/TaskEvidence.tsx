@@ -28,14 +28,15 @@ function verdictLabel(stage: EvidenceStage): string {
   return verdict.pass ? tr("Passed") : tr("Returned");
 }
 
-export function TaskEvidence(props: { team: string; card: TaskView; revision: number; read?: EvidencePort }) {
+export function TaskEvidence(props: { team: string; card: TaskView; revision: number; read?: EvidencePort; onUpdating?: (updating: boolean) => void }) {
   const [shown, setShown] = createSignal<Shown>();
   let generation = 0;
   const load = (node: number) => {
     const asked = ++generation;
     // The same task's evidence stays in view while a newer revision is read.
     setShown((previous) => previous?.node === node && previous.evidence ? previous : { node, loading: true });
-    (props.read ?? readTaskEvidence)(props.team, node).then(
+    const port = props.read ?? readTaskEvidence;
+    Promise.resolve().then(() => port(props.team, node)).then(
       (evidence) => { if (asked === generation) setShown({ node, loading: false, evidence }); },
       (error: unknown) => { if (asked === generation) setShown({ node, loading: false, error: error instanceof Error ? error.message : String(error) }); },
     );
@@ -47,12 +48,22 @@ export function TaskEvidence(props: { team: string; card: TaskView; revision: nu
     if (asked) load(asked);
     else { generation++; setShown(undefined); }
   }));
-  onCleanup(() => { generation++; });
+  // Evidence of another revision than the decision shown (kept in view while
+  // the newer one is read, or newer than the board) is marked as updating,
+  // and the inspector offers no Accept or Return beside it (review of #2531).
+  const updating = createMemo(() => {
+    const state = shown();
+    return props.card.kind !== "stage" && !!state?.evidence && state.node === node() && state.evidence.revision !== props.revision;
+  });
+  createEffect(() => props.onUpdating?.(updating()));
+  onCleanup(() => { generation++; props.onUpdating?.(false); });
   return (
     <Show when={props.card.kind !== "stage" && shown()}>
       {(state) => (
-        <section class="team-evidence" data-task-evidence aria-label={tr("Report and verdicts")}>
+        <section class="team-evidence" classList={{ "team-evidence-updating": updating() }} data-task-evidence
+          data-evidence-updating={updating() ? "" : undefined} aria-label={tr("Report and verdicts")} aria-busy={updating()}>
           <h4>{tr("Report and verdicts")}</h4>
+          <Show when={updating()}><p class="dim" role="status" data-evidence-reading>{tr("Reading the evidence…")}</p></Show>
           <Show when={!state().loading} fallback={<p class="dim">{tr("Reading the evidence…")}</p>}>
             <Show when={state().evidence} fallback={
               <div class="team-evidence-error" role="alert">

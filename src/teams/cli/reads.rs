@@ -494,27 +494,19 @@ pub(super) fn evidence(
     let identity = actor::resolve(&store, caller)?;
     let team = actor::target_team(&store, &identity, options.team()?)?;
     actor::lead_reader(&store, &identity, &team)?;
-    let pinned = store.team(&team)?.ok_or_else(|| not_found_team(&team))?;
+    // The revision, the report and every stage come from one snapshot, so a
+    // window can tell evidence of the decision it shows from an older one.
     let evidence = store.task_evidence(&team, node)?;
-    let stage_kind = |stage: &Node| {
-        pinned
-            .bundle
-            .pipelines
-            .iter()
-            .find(|pipeline| pipeline.id == stage.pipeline)
-            .and_then(|pipeline| pipeline.stages.get(stage.stage_index as usize))
-            .map(|step| step.kind)
-    };
     let stages: Vec<Value> = evidence
         .stages
         .iter()
-        .map(|(stage, verdict)| {
+        .map(|stage| {
             json!({
-                "node": stage.id,
-                "kind": stage_kind(stage),
+                "node": stage.node,
+                "kind": stage.kind,
                 "round": stage.round,
                 "state": stage.state,
-                "verdict": verdict.as_ref().map(|verdict| json!({
+                "verdict": stage.verdict.as_ref().map(|verdict| json!({
                     "generation": verdict.generation,
                     "member": verdict.actor.get("member").and_then(Value::as_str),
                     "pass": verdict.pass,
@@ -527,11 +519,11 @@ pub(super) fn evidence(
         "ok": true,
         "actor": actor::view(&identity.actor),
         "team": team,
-        "revision": pinned.revision,
+        "revision": evidence.revision,
         "node": node,
         "report": evidence.report.map(|report| json!({
             "generation": report.generation,
-            "member": evidence.node.implementer,
+            "member": report.member,
             "commit": report.commit,
             "text": report.text,
             "notes": report.notes,
