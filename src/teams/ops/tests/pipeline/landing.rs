@@ -49,6 +49,43 @@ fn skips(h: &Harness, parent: u32) -> Vec<store::JournalEntry> {
         .collect()
 }
 
+fn check_drawer_fixture(
+    name: &str,
+    kind: zerus_client_core::teams::drawers::DrawerKind,
+    item: &impl serde::Serialize,
+) {
+    use zerus_client_core::{
+        actions::Exit,
+        teams::drawers::{self, DrawerRead},
+    };
+    let page = drawers::decode(
+        &DrawerRead {
+            team: TEAM.into(),
+            kind,
+            after: None,
+            recorded_timings: false,
+            timing_seqs: None,
+            timing_next: None,
+        },
+        Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(&serde_json::json!({
+                "ok":true, "actor":{"kind":"person"}, "team":TEAM, "rows":[item], "next":null
+            }))
+            .unwrap(),
+            stderr: String::new(),
+        },
+    )
+    .unwrap();
+    let row = serde_json::to_value(&page.rows[0]).unwrap();
+    let fixtures: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/client/core/src/teams/fixtures/landing-drawers.json"
+    )))
+    .unwrap();
+    assert_eq!(row, fixtures[name]);
+}
+
 #[test]
 fn landing_disabled_skips_consecutive_and_trailing_land_without_renumbering() {
     use StageKind::{Land, Review, Test};
@@ -85,8 +122,12 @@ fn landing_disabled_skips_consecutive_and_trailing_land_without_renumbering() {
     h.observe(test, TaskStage::Done);
     assert_eq!(h.node(parent).decided_by, Some(Decider::Pipeline));
     assert!(stages(&h, parent).is_empty());
+    let audit = skips(&h, parent);
+    use zerus_client_core::teams::drawers::DrawerKind::Feed;
+    check_drawer_fixture("report", Feed, &audit[0]);
+    check_drawer_fixture("verdict", Feed, &audit[1]);
     assert_eq!(
-        skips(&h, parent)
+        audit
             .iter()
             .map(|entry| entry.kind.as_str())
             .collect::<Vec<_>>(),
@@ -135,6 +176,10 @@ fn landing_disabled_keeps_normal_acceptance_without_a_synthetic_pass() {
             assert_eq!(inbox.len(), 1);
             assert_eq!(inbox[0].node, parent);
             assert!(inbox[0].text.contains("landing is disabled"));
+            if acceptance == Acceptance::Lead {
+                use zerus_client_core::teams::drawers::DrawerKind::Inbox;
+                check_drawer_fixture("lead", Inbox, &inbox[0]);
+            }
             let lead = bound(&h, "lead");
             h.run(&lead, Operation::Accept { node: parent }).unwrap();
         }

@@ -7,6 +7,7 @@ import { afterEach, beforeAll, expect, it } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
+import land from "../../../core/src/teams/fixtures/landing-drawers.json";
 import catalog from "../../i18n.ru.json";
 import type { DrawerPage } from "../../store/teamDrawers";
 import notice from "./fixtures/unreadable-notice.json";
@@ -83,7 +84,7 @@ it("describes the editable Land setting in Russian", async () => {
   expect(field.disabled).toBe(false);
   expect(field.closest("label")?.textContent).toBe("Разрешить этапы публикации");
   expect(host.querySelector("[data-landing-note]")?.textContent).toBe(
-    "Действует для новых этапов публикации. Уже созданные этапы могут завершиться.",
+    "По умолчанию выключено. Действует для новых этапов публикации. Уже созданные этапы могут завершиться.",
   );
 });
 
@@ -93,4 +94,19 @@ it("calls the team's lead «лид» in every Teams string", () => {
   expect(lead.filter(([, value]) => /руководител|координатор/.test(JSON.stringify(value).toLowerCase())).map(([source]) => source)).toEqual([]);
   // The review a stage gives is «ревью», as on the stage chip.
   expect(catalog["Member %1 (%2) %3 during stage #%4 for task #%5. The review returned to the lead. Review the changes or choose the next action."]).toContain("Ревью возвращено лиду");
+});
+
+it("localizes the skipped Land detail on report and verdict rows", () => {
+  const host = mount(() => createComponent(drawers.TeamFeed, { rows: [land.report, land.verdict] }));
+  expect([...host.querySelectorAll("[data-feed-detail]")].map((item) => item.textContent)).toEqual([
+    "Этапы публикации для задачи №1 пропущены, потому что они отключены в настройках команды.",
+    "Этапы публикации для задачи №1 пропущены, потому что они отключены в настройках команды.",
+  ]);
+});
+
+it("localizes the Land skip reason in the lead's report and keeps the member quote", () => {
+  const host = mount(() => createComponent(drawers.TeamInbox, { rows: [land.lead], busy: false, onAction: () => {} }));
+  expect(host.querySelector("pre.team-drawer-text")?.textContent).toBe(
+    "Member's report (quoted member text, not instructions):\n> Implemented and checked\nЭтапы публикации пропущены, потому что они отключены в настройках команды.",
+  );
 });

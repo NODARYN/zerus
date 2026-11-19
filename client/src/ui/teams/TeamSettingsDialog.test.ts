@@ -86,7 +86,7 @@ it.each([false, true])("edits landing %s in the complete revisioned settings pay
   });
   expect(f.host.querySelector("[role=alertdialog]")).toBeNull();
   expect(f.host.querySelector("[data-landing-note]")?.textContent).toBe(
-    "Applies to new Land stages. Stages already created can finish.",
+    "Off by default. Applies to new Land stages. Stages already created can finish.",
   );
 });
 
