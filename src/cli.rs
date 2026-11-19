@@ -4654,6 +4654,10 @@ mod tests {
                     ""
                 )
                 .replace(
+                    "       Desktop Teams Person placement fields: desktop-team-person-placement-v1\n",
+                    ""
+                )
+                .replace(
                     "       Desktop deferred answer update phase: desktop-deferred-answer-update-phase-v1\n",
                     ""
                 )
