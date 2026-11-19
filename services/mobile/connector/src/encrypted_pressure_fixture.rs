@@ -1,5 +1,16 @@
 // Synthetic tests only. Neither method is included in an installed connector.
 impl Journal {
+    pub(crate) fn pressure_fixture_legacy_conservative(&self, id: &str) {
+        assert_eq!(
+            self.db
+                .execute(
+                    "UPDATE encrypted_requests SET read_cache_class=2 WHERE request_id=?",
+                    [id]
+                )
+                .unwrap(),
+            1
+        );
+    }
     // Filling the real cache uses the maintained counter. The full payload
     // sum below still audits it before and after the pressure assertions.
     pub(crate) fn pressure_fixture_result_bytes(&self) -> i64 {

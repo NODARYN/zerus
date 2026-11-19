@@ -36,7 +36,10 @@ impl Journal {
             WHERE read_cache_class=0 AND delivered=1 AND result IS NOT NULL;
             CREATE INDEX IF NOT EXISTS encrypted_read_pressure
             ON encrypted_requests(updated_at,request_id)
-            WHERE read_cache_class=1 AND delivered=1 AND result IS NOT NULL;",
+            WHERE read_cache_class=1 AND delivered=1 AND result IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS encrypted_read_recheck
+            ON encrypted_requests(updated_at,request_id)
+            WHERE read_cache_class=2 AND delivered=1 AND result IS NOT NULL;",
         )?;
         let tx = self.db.unchecked_transaction()?;
         if tx.execute(
@@ -143,7 +146,7 @@ impl Journal {
                 }
                 trim_steps += 1;
                 if size < 0 || size as usize > ENVELOPE {
-                    self.db.execute("UPDATE encrypted_requests SET read_cache_class=2
+                    self.db.execute("UPDATE encrypted_requests SET read_cache_class=3
                     WHERE request_id=? AND read_cache_class=1 AND delivered=1 AND result IS NOT NULL", [id])?;
                     continue;
                 }
@@ -166,15 +169,28 @@ impl Journal {
         if fits()? {
             return Ok(());
         }
-        // Class 0 is unexamined, 1 is a verified Read pair, 2 is conservative.
+        // Class 0 is unexamined, 1 is a verified Read pair, 2 is a legacy
+        // conservative verdict, and 3 is a current conservative verdict.
         // Persist the frontier even when this turn cannot free enough bytes.
-        let candidates: Vec<(i64, i64, i64, i64, i64)> = self.db.prepare(
+        let mut candidates: Vec<(i64, i64, i64, i64, i64)> = self.db.prepare(
             "SELECT rowid,length(CAST(request_id AS BLOB)),length(CAST(header AS BLOB)),length(CAST(result AS BLOB)),length(CAST(digest AS BLOB))
              FROM encrypted_requests INDEXED BY encrypted_read_classify
              WHERE read_cache_class=0 AND delivered=1 AND result IS NOT NULL
              ORDER BY updated_at,request_id LIMIT 64",
         )?.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?
             .collect::<rusqlite::Result<_>>()?;
+        // Revisit old conservative verdicts once using the updated proof.
+        // New conservative verdicts move to class 3, so failed proofs do not
+        // pin the frontier or repeatedly consume verification work.
+        if candidates.is_empty() {
+            candidates = self.db.prepare(
+                "SELECT rowid,length(CAST(request_id AS BLOB)),length(CAST(header AS BLOB)),length(CAST(result AS BLOB)),length(CAST(digest AS BLOB))
+                 FROM encrypted_requests INDEXED BY encrypted_read_recheck
+                 WHERE read_cache_class=2 AND delivered=1 AND result IS NOT NULL
+                 ORDER BY updated_at,request_id LIMIT 64",
+            )?.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+        }
         let mut bytes = 0usize;
         for (examined, (row, id_len, header_len, result_len, digest_len)) in
             candidates.into_iter().enumerate()
@@ -188,8 +204,8 @@ impl Journal {
                 || !(1..=ENVELOPE as i64).contains(&result_len)
             {
                 self.db.execute(
-                    "UPDATE encrypted_requests SET read_cache_class=2
-                    WHERE rowid=? AND read_cache_class=0 AND delivered=1 AND result IS NOT NULL",
+                    "UPDATE encrypted_requests SET read_cache_class=3
+                    WHERE rowid=? AND read_cache_class IN (0,2) AND delivered=1 AND result IS NOT NULL",
                     [row],
                 )?;
                 continue;
@@ -201,7 +217,7 @@ impl Journal {
             bytes += size;
             let pair: Option<(String,String,String,String)> = self.db.query_row(
                 "SELECT request_id,digest,header,result FROM encrypted_requests
-                 WHERE rowid=? AND read_cache_class=0 AND delivered=1
+                 WHERE rowid=? AND read_cache_class IN (0,2) AND delivered=1
                  AND length(CAST(request_id AS BLOB))<=128 AND length(CAST(header AS BLOB))<=8192 AND length(CAST(digest AS BLOB))=43
                  AND length(CAST(result AS BLOB))<=2097152", [row],
                 |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
@@ -212,12 +228,12 @@ impl Journal {
             let class = if verified_read(&id, &digest, &header, &result) {
                 1
             } else {
-                2
+                3
             };
             // Exact immutable bytes, not a parsed prefix or current-row adoption.
             self.db.execute(
                 "UPDATE encrypted_requests SET read_cache_class=?
-                WHERE rowid=? AND read_cache_class=0 AND delivered=1
+                WHERE rowid=? AND read_cache_class IN (0,2) AND delivered=1
                 AND request_id=? AND digest=? AND header=? AND result=?",
                 params![class, row, id, digest, header, result],
             )?;

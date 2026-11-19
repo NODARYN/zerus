@@ -296,7 +296,7 @@ fn read_journal(path: &Path) -> rusqlite::Result<Contents> {
     })
 }
 
-const ENCRYPTED_OBJECTS: [(&str, &str, Option<&str>); 14] = [
+const ENCRYPTED_OBJECTS: [(&str, &str, Option<&str>); 15] = [
     (
         "table",
         "encrypted_requests",
@@ -345,6 +345,11 @@ const ENCRYPTED_OBJECTS: [(&str, &str, Option<&str>); 14] = [
         "index",
         "encrypted_read_pressure",
         Some("CREATE INDEX encrypted_read_pressure ON encrypted_requests(updated_at,request_id) WHERE read_cache_class=1 AND delivered=1 AND result IS NOT NULL"),
+    ),
+    (
+        "index",
+        "encrypted_read_recheck",
+        Some("CREATE INDEX encrypted_read_recheck ON encrypted_requests(updated_at,request_id) WHERE read_cache_class=2 AND delivered=1 AND result IS NOT NULL"),
     ),
     (
         "trigger",
@@ -432,6 +437,14 @@ impl Contents {
             .collect();
         if encrypted {
             for &(kind, name, definition) in &ENCRYPTED_OBJECTS {
+                // This additive index is installed on the next journal open;
+                // its absence in an older encrypted journal is not corruption.
+                if name == "encrypted_read_recheck"
+                    && !self.objects.iter().any(|(_, actual, _)| actual == name)
+                {
+                    pending.push(format!("create index {name}"));
+                    continue;
+                }
                 let found = self
                     .objects
                     .iter()
@@ -710,6 +723,31 @@ mod tests {
         assert_eq!(report["binding"], "matches");
         assert_eq!(report["unexpected_objects"], json!([]));
         assert_eq!(report["ok"], true, "{report}");
+    }
+
+    #[test]
+    fn missing_recheck_index_is_a_safe_pending_migration() {
+        let (_directory, path) = initialized_encrypted();
+        let db = Connection::open(&path).unwrap();
+        db.execute("DROP INDEX encrypted_read_recheck", []).unwrap();
+        drop(db);
+        let before = std::fs::read(&path).unwrap();
+        let report = journal(&path, "protected", LockState::Absent);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(report["schema"], "legacy");
+        assert_eq!(
+            report["pending_migration"],
+            json!(["create index encrypted_read_recheck"])
+        );
+        assert_eq!(report["unexpected_objects"], json!([]));
+        assert_eq!(report["ok"], true);
+        let reopened = Journal::open(path.parent().unwrap(), "protected", 1.0).unwrap();
+        reopened.encrypted_init(1.0).unwrap();
+        drop(reopened);
+        assert_eq!(
+            journal(&path, "protected", LockState::Absent)["schema"],
+            "current"
+        );
     }
 
     #[test]

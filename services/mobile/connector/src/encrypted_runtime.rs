@@ -107,15 +107,25 @@ fn accepted_read_cache(
     };
     let response = &envelope.header;
     let me = &profile.identity.device;
-    let Some(phone) = profile.membership.members.get(&request.sender_device_id) else {
-        return false;
+    // A revoked phone has no current public key. The signed gateway result
+    // still binds its exact identity and generation to the admitted request;
+    // only the authenticated membership's explicit revocation permits this
+    // fallback. An unknown or currently non-phone device is never adopted.
+    let phone_valid = match profile.membership.members.get(&request.sender_device_id) {
+        Some(phone) => {
+            phone.role == Role::Phone && request.sender_key_generation == phone.key_generation
+        }
+        None => profile
+            .membership
+            .revoked_device_ids
+            .contains(&request.sender_device_id),
     };
     request.canonical_bytes().is_ok()
         && request.kind == PayloadKind::Request
         && response.kind == PayloadKind::Result
         && request.operation_class == OperationClass::Read
         && response.operation_class == OperationClass::Read
-        && phone.role == Role::Phone
+        && phone_valid
         && me.role == Role::Computer
         && profile.membership.members.get(&me.device_id) == Some(me)
         && request.workspace_id == profile.membership.workspace_id
@@ -128,9 +138,8 @@ fn accepted_read_cache(
         && response.gateway_id == request.gateway_id
         && response.sender_device_id == me.device_id
         && response.sender_key_generation == me.key_generation
-        && response.recipient_device_id == phone.device_id
-        && response.recipient_key_generation == phone.key_generation
-        && request.sender_key_generation == phone.key_generation
+        && response.recipient_device_id == request.sender_device_id
+        && response.recipient_key_generation == request.sender_key_generation
         && response.route_id == request.route_id
         && profile.historical_heads.get(&request.membership_revision)
             == Some(&request.membership_head)

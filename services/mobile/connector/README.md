@@ -573,13 +573,18 @@ that signature again or infer a plaintext operation from ciphertext. It requires
 an exact typed stored Request/Read header and a full, cryptographically verified
 Result/Read envelope from the current authorized gateway, matching workspace,
 request/route/gateway, Phone/Computer identities, key generations and known
-membership heads. Duplicate/malformed JSON, invalid signatures, class/routing
-mismatches and unknown or retired keys remain conservative. This trusts the
+membership heads. For a phone explicitly listed as revoked in the authenticated
+membership, the signed gateway result instead binds the same revoked device ID
+and key generation to the stored request; unknown devices remain conservative.
+Duplicate/malformed JSON, invalid signatures, class/routing mismatches and
+unknown gateway keys remain conservative. This trusts the
 existing private, profile-bound journal writer contract; it is not provenance
 for an arbitrary foreign database or a different historical writer.
 
 An additive `read_cache_class` column records unexamined/verified/conservative
-classification; partial indexes advance past rejected legacy rows and select
+classification. Previously conservative rows are rechecked once against the
+revoked-device proof; newly rejected rows retain a distinct conservative
+classification. Partial indexes advance past rejected legacy rows and select
 oldest verified caches. Each call examines at most 64 candidates/8 MiB, refunds
 at most 64 caches/8 MiB and checks a 20 ms original deadline between rows. The
 first finite candidate

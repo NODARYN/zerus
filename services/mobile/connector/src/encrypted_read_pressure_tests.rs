@@ -202,6 +202,87 @@ mod read_pressure {
         assert_eq!(used.1, used.2);
     }
     #[test]
+    fn revoked_phone_legacy_results_are_rechecked_without_replaying_or_touching_mutations() {
+        let f = Fixture::new();
+        let profile = workspace::load_active(&f.private_dir).unwrap();
+        let j = &f.connector.journal;
+        let now = crate::now();
+        let read = pair(&f, &profile, 7100, OperationClass::Read, 4096);
+        let mutation = pair(&f, &profile, 7101, OperationClass::Mutation, 4096);
+        let undelivered = pair(&f, &profile, 7102, OperationClass::Read, 4096);
+        let mut bad_signature = pair(&f, &profile, 7103, OperationClass::Read, 4096);
+        let mut envelope: EncryptedEnvelope = serde_json::from_str(&bad_signature.result).unwrap();
+        envelope.signature = crypto::encode(&[0; 64]);
+        bad_signature.result = serde_json::to_string(&envelope).unwrap();
+        for pair in [&read, &mutation, &bad_signature] {
+            seed(j, pair, true, now - 180.0);
+            j.pressure_fixture_legacy_conservative(&pair.id);
+        }
+        seed(j, &undelivered, false, now - 180.0);
+        let original = j.pressure_fixture_row(&read.id);
+        let protected: Vec<_> = [&mutation, &undelivered, &bad_signature]
+            .iter()
+            .map(|p| j.pressure_fixture_row(&p.id))
+            .collect();
+        let mut revoked = workspace::load_active(&f.private_dir).unwrap();
+        let phone = f.phone.public().device_id.clone();
+        revoked.membership.members.remove(&phone);
+        assert!(!accepted_read_cache(
+            &revoked,
+            &read.id,
+            &read.digest,
+            &read.header,
+            &read.result
+        ));
+        revoked.membership.revoked_device_ids.insert(phone);
+        assert!(accepted_read_cache(
+            &revoked,
+            &read.id,
+            &read.digest,
+            &read.header,
+            &read.result
+        ));
+        let mut altered: Header = serde_json::from_str(&read.header).unwrap();
+        altered.sender_key_generation += 1;
+        assert!(!accepted_read_cache(
+            &revoked,
+            &read.id,
+            &read.digest,
+            &serde_json::to_string(&altered).unwrap(),
+            &read.result
+        ));
+        let mut unknown_history = workspace::load_active(&f.private_dir).unwrap();
+        unknown_history.membership = revoked.membership.clone();
+        unknown_history.historical_heads.clear();
+        assert!(!accepted_read_cache(
+            &unknown_history,
+            &read.id,
+            &read.digest,
+            &read.header,
+            &read.result
+        ));
+        let used = j.pressure_fixture_usage().1;
+        for _ in 0..8 {
+            turn(j, &revoked, now, read.result.len(), used);
+        }
+        let after = j.pressure_fixture_row(&read.id);
+        assert!(after.2.is_none());
+        assert_eq!(
+            (&after.0, &after.1, after.3, after.4, after.5),
+            (&original.0, &original.1, original.3, original.4, original.5)
+        );
+        assert_eq!(
+            protected,
+            [&mutation, &undelivered, &bad_signature]
+                .iter()
+                .map(|p| j.pressure_fixture_row(&p.id))
+                .collect::<Vec<_>>()
+        );
+        assert!(!j
+            .encrypted_reserve(&read.id, &read.digest, &read.header, now)
+            .unwrap());
+    }
+    #[test]
     fn grace_classes_and_undelivered_rows_are_protected() {
         let f = Fixture::new();
         let profile = workspace::load_active(&f.private_dir).unwrap();
