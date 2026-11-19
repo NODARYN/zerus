@@ -26,13 +26,17 @@ pub(super) fn receipt_path_in(state: &Path, common: &Path, path: &Path) -> PathB
 }
 
 pub(super) fn created(common: &Path, path: &Path, branch: &str, head: &str) -> Result<()> {
+    create_owner(common, path, branch, head).map(drop)
+}
+
+fn create_owner(common: &Path, path: &Path, branch: &str, head: &str) -> Result<Value> {
     let metadata = git(
         path,
         &["rev-parse", "--absolute-git-dir"],
         Instant::now() + Duration::from_secs(3),
     )
     .map_err(|e| e.detail)?;
-    created_at(common, path, branch, head, &metadata).map(drop)
+    created_at(common, path, branch, head, &metadata)
 }
 
 /// `metadata` is the checkout's `rev-parse --absolute-git-dir` output. The
@@ -189,13 +193,28 @@ pub(super) fn prepare_removal(common: &Path, row: &Value) -> Result<()> {
         if !record["worktree_owner"].is_null() && record["worktree_owner"]["id"]!=ownership["id"] {
             return Ok(());
         }
-        record["worktree_cleanup"] = json!({"owner":ownership,"head":row["head"],"branch":row["branch"],"status":"removal_pending"});
-        atomic_record(
-            &archive::path(string(&record, "archive_id"))?,
-            &mut record,
-        )?;
+        let cleanup = json!({"owner":ownership,"head":row["head"],"branch":row["branch"],"status":"removal_pending"});
+        if record["backend"] == "dsh" {
+            super::dsh::native_archives::mark_worktree_removal(&record, &cleanup)?;
+        } else {
+            record["worktree_cleanup"] = cleanup;
+            atomic_record(
+                &archive::path(string(&record, "archive_id"))?,
+                &mut record,
+            )?;
+        }
         Ok(())
     })
+}
+
+fn archive_folder(record: &Value) -> &Path {
+    let launch = string(record, "launch_dir");
+    let folder = if launch.is_empty() && record["backend"] == "dsh" {
+        string(record, "cwd")
+    } else {
+        launch
+    };
+    Path::new(folder)
 }
 
 pub(super) fn restorable(record: &Value) -> bool {
@@ -207,15 +226,15 @@ pub(super) fn restorable(record: &Value) -> bool {
         && Path::new(string(owner, "common_dir")).is_dir()
         && !string(cleanup, "branch").is_empty()
         && !string(cleanup, "head").is_empty()
-        && Path::new(string(record, "launch_dir")).starts_with(Path::new(string(owner, "path")))
+        && archive_folder(record).starts_with(Path::new(string(owner, "path")))
 }
 
 /// Restore is an explicit launch operation, never triggered by browsing an
 /// archive. Refuse branch changes, existing destinations and all uncertain cases.
-pub(super) fn restore(record: &Value) -> Result<()> {
-    let folder = Path::new(string(record, "launch_dir"));
+pub(super) fn restore(record: &Value) -> Result<Option<Value>> {
+    let folder = archive_folder(record);
     if folder.is_dir() {
-        return Ok(());
+        return Ok(None);
     }
     if !restorable(record) {
         return Err(format!(
@@ -302,12 +321,12 @@ pub(super) fn restore(record: &Value) -> Result<()> {
         );
     }
     // Re-establish ownership for the new Git metadata instance. Keep branch/head.
-    created(common, path, branch, string(cleanup, "head"))?;
+    let ownership = create_owner(common, path, branch, string(cleanup, "head"))?;
     let _ = fs::remove_file(cache);
     if !folder.is_dir() {
         return Err("Original session subfolder is unavailable in the restored worktree".into());
     }
-    Ok(())
+    Ok(Some(ownership))
 }
 
 /// Archive success must never become a failed termination because cleanup was

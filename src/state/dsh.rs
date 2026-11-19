@@ -1021,6 +1021,10 @@ pub(crate) fn launch(
     let config = crate::config::Config::load().map_err(|e| e.message)?;
     let defaults = crate::accounts::launch_selection(&config, "dsh").map_err(|e| e.message)?;
     let mut record = new_binding(name, &cwd, launch_id);
+    if let Some(owner) = worktree_lifecycle::for_folder(&cwd) {
+        record["worktree_owner"] = owner;
+        record["launch_dir"] = json!(cwd);
+    }
     if let Some(parent) = parent {
         record["parent"] = parent;
     }
