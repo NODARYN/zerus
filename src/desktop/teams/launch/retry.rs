@@ -1,6 +1,6 @@
 use super::*;
-use crate::desktop::teams::items::Failure as ItemFailure;
 use crate::desktop::teams::items::kind::LAUNCH_FAILING;
+use crate::desktop::teams::items::Failure as ItemFailure;
 
 /// The failures a launch row must reach before its service item is written:
 /// the retry table's 15-minute cap (zerus-63rru.24 and zerus-63rru.63).
@@ -83,13 +83,13 @@ impl Runtime {
         team: &Team,
         row: &mut Row,
         reason: &str,
+        required_kind: Option<&str>,
         now: i64,
     ) -> Result<()> {
         if let Some(card) = row.card_id {
-            if store
-                .card(&row.team, card)?
-                .is_some_and(|c| c.state == "open")
-            {
+            if store.card(&row.team, card)?.is_some_and(|c| {
+                c.state == "open" && required_kind.is_none_or(|kind| c.kind == kind)
+            }) {
                 apply(
                     store,
                     team,
@@ -116,6 +116,7 @@ impl Runtime {
             team,
             row,
             "The launch precondition recovered; this card is stale.",
+            None,
             now,
         )?;
         row.card_id = None;
@@ -173,7 +174,16 @@ impl Runtime {
                 self.admitted = None;
             }
             if row.state == State::Blocked {
-                Self::close_open_card(store, team, &mut row, "Member removed", now)?;
+                // A blocked ledger row can still hold an unknown native
+                // launch. Leave that warning open for acknowledgement.
+                Self::close_open_card(
+                    store,
+                    team,
+                    &mut row,
+                    "Member removed",
+                    Some("launch_blocked"),
+                    now,
+                )?;
             }
             if !row.late_after_stop
                 && matches!(
