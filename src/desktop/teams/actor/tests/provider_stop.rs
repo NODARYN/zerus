@@ -14,7 +14,10 @@ const FAILURE: i64 = HANDOUT + 2_000;
 
 #[test]
 fn each_providers_quota_stop_hands_stage_21_back_once() {
-    real_rows::isolated(CHILD);
+    let output = real_rows::isolated(CHILD);
+    if std::env::var_os("ZERUS_EXPORT_PROVIDER_NOTES").is_some() {
+        print!("{output}");
+    }
 }
 
 #[test]
@@ -51,10 +54,20 @@ fn quota_fixture() {
         assert_eq!(entry.node, 20);
         assert_eq!(entry.kind, "report");
         assert_eq!(entry.state, "open");
-        assert!(entry
+        let label = match agent {
+            "kimi" => "Kimi",
+            "claude" => "Claude",
+            _ => "Codex",
+        };
+        let note = entry
             .notes
             .iter()
-            .any(|note| note.code == "provider_stop_quota"));
+            .find(|note| note.code == "provider_stop_quota")
+            .unwrap();
+        assert_eq!(note.parameters, ["m3", label, "20", "21"]);
+        if agent == "kimi" {
+            provider_projection("stage", entry);
+        }
         assert_eq!(h.store.attempt_holder(TEAM, 21).unwrap(), None);
         assert!(h.store.attempt_holder(TEAM, 19).unwrap().is_some());
         let effects = h.store.effects(TEAM, 200, None).unwrap().rows;
@@ -99,7 +112,10 @@ const OTHER_CHILD: &str = "desktop::teams::actor::tests::provider_stop::other_ca
 
 #[test]
 fn provider_stop_controls_and_task_hand_back_use_native_records() {
-    real_rows::isolated(OTHER_CHILD);
+    let output = real_rows::isolated(OTHER_CHILD);
+    if std::env::var_os("ZERUS_EXPORT_PROVIDER_NOTES").is_some() {
+        print!("{output}");
+    }
 }
 
 #[test]
@@ -227,6 +243,8 @@ fn other_cases_fixture() {
     assert_eq!(item.node, 19);
     assert_eq!(item.kind, format!("provider_stop:{other_effect}"));
     assert_eq!(item.notes[0].code, "provider_stop_authentication");
+    assert_eq!(item.notes[0].parameters, ["m2", "Claude", "19"]);
+    provider_projection("task", item);
     assert!(h.store.node(TEAM, 19).unwrap().unwrap().hold);
     assert!(h.store.attempt_holder(TEAM, 19).unwrap().is_none());
     assert_eq!(
@@ -276,6 +294,13 @@ fn confirmed_provider_stop_closes_only_its_unreadable_confirmation_card() {
 #[test]
 #[ignore = "run by the private actor fixture"]
 fn card_fixture() {
+    for lost_opener in [false, true] {
+        check_confirmation_close(lost_opener);
+    }
+    confirmation_with_another_binding();
+}
+
+fn check_confirmation_close(lost_opener: bool) {
     let (mut h, mut ports, record, _) = stage("kimi");
     let mut actor = super::super::Runtime::open(h.temp.path(), &ports.native.machine).unwrap();
     let team = h.store.team(TEAM).unwrap().unwrap();
@@ -295,10 +320,28 @@ fn card_fixture() {
         "another-binding",
         "The member's session record cannot be read",
     ));
-    for now in [HANDOUT - 200_000, HANDOUT] {
+    actor
+        .confirmation_observation(
+            &mut h.store,
+            &team,
+            &reviewer,
+            fault,
+            HANDOUT - 200_000,
+            |_| {},
+        )
+        .unwrap();
+    let mut open = || {
         actor
-            .confirmation_observation(&mut h.store, &team, &reviewer, fault, now, |_| {})
+            .confirmation_observation(&mut h.store, &team, &reviewer, fault, HANDOUT, |_| {})
             .unwrap();
+    };
+    if lost_opener {
+        super::retry_cards::crash("notice_applied", open);
+        actor = super::super::Runtime::open(h.temp.path(), &ports.native.machine).unwrap();
+    } else {
+        open();
+    }
+    for now in [HANDOUT - 200_000, HANDOUT] {
         actor
             .confirmation_observation(&mut h.store, &team, &other, unrelated, now, |_| {})
             .unwrap();
@@ -314,9 +357,55 @@ fn card_fixture() {
         FAILURE,
     );
     publish(&ports, &stopped);
-    actor
-        .tick(&mut h.store, &mut ports, TEAM, FAILURE, true)
+    let card = old.iter().find(|card| card.text.contains("m3")).unwrap();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch(&format!(
+            "CREATE TRIGGER reject_confirmation_close BEFORE UPDATE OF state ON cards
+         WHEN OLD.seq={} AND NEW.state='closed'
+         BEGIN SELECT RAISE(ABORT, 'fixture card close failed'); END;",
+            card.seq
+        ))
         .unwrap();
+    let blocked = actor.tick(&mut h.store, &mut ports, TEAM, FAILURE, true);
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_confirmation_close")
+        .unwrap();
+    assert_eq!(
+        h.store
+            .attempt_holder(TEAM, 21)
+            .unwrap()
+            .map(|held| held.member)
+            .as_deref(),
+        Some("m3"),
+        "the hand-back committed despite the failed confirmation close: {blocked:?}"
+    );
+    assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows, old);
+    assert!(!h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|item| {
+            item.node == 20
+                && item
+                    .notes
+                    .iter()
+                    .any(|note| note.code == "provider_stop_quota")
+        }));
+
+    // A restarted actor can commit the original hand-back after storage recovers.
+    let mut actor = super::super::Runtime::open(h.temp.path(), &ports.native.machine).unwrap();
+    actor
+        .tick(&mut h.store, &mut ports, TEAM, FAILURE + 1_000_000, true)
+        .unwrap();
+    assert!(h.store.attempt_holder(TEAM, 21).unwrap().is_none());
     let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
     assert_eq!(cards.len(), 2);
     assert_eq!(
@@ -335,16 +424,200 @@ fn card_fixture() {
             .state,
         "open"
     );
-    for now in [FAILURE, FAILURE + 200_000] {
+    for now in [FAILURE + 1_000_000, FAILURE + 1_200_000] {
         actor
             .confirmation_observation(&mut h.store, &team, &reviewer, fault, now, |_| {})
             .unwrap();
     }
     assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows, cards);
     let journal = h.store.journal(TEAM, 200, None).unwrap().rows;
-    assert!(journal.iter().any(|row| row
-        .text
-        .contains("The service confirmed that the member stopped after a provider error.")));
+    assert!(journal.iter().any(|row| row.kind == "release_provider_stop"
+        && row.refs.contains(&format!("card:{}", card.seq))
+        && row
+            .text
+            .contains("The service confirmed that the member stopped after a provider error.")));
+}
+
+fn confirmation_with_another_binding() {
+    let (mut h, mut ports, record, _) = stage("kimi");
+    let mut actor = super::super::Runtime::open(h.temp.path(), &ports.native.machine).unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let reviewer = h.store.member(TEAM, "m3").unwrap().unwrap();
+    let old = super::super::provider_binding_stamp(
+        record["launch_id"].as_str().unwrap(),
+        record["session_id"].as_str().unwrap(),
+        "previous-run",
+        record["conversation_id"].as_str().unwrap(),
+    );
+    for now in [HANDOUT - 200_000, HANDOUT] {
+        actor
+            .confirmation_observation(
+                &mut h.store,
+                &team,
+                &reviewer,
+                Some((&old, "The member's session record cannot be read")),
+                now,
+                |_| {},
+            )
+            .unwrap();
+    }
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].state, "open");
+    publish(
+        &ports,
+        &hook(
+            &record,
+            "StopFailure",
+            json!({"error_type":"APIProviderRateLimitError","error_message":"Weekly quota reached."}),
+            FAILURE,
+        ),
+    );
+    actor
+        .tick(&mut h.store, &mut ports, TEAM, FAILURE, true)
+        .unwrap();
+    assert!(h.store.attempt_holder(TEAM, 21).unwrap().is_none());
+    assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows, cards);
+}
+
+fn provider_projection(key: &str, item: &crate::teams::store::InboxItem) {
+    use zerus_client_core::{
+        actions::Exit,
+        teams::drawers::{self, DrawerKind, DrawerRead},
+    };
+    let page = drawers::decode(
+        &DrawerRead {
+            team: TEAM.into(),
+            kind: DrawerKind::Inbox,
+            after: None,
+            recorded_timings: false,
+            timing_seqs: None,
+            timing_next: None,
+        },
+        Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(&json!({
+                "ok":true, "actor": {"kind":"person"}, "team":TEAM, "rows":[item], "next":null
+            }))
+            .unwrap(),
+            stderr: String::new(),
+        },
+    )
+    .unwrap();
+    let row = serde_json::to_value(&page.rows[0]).unwrap();
+    if std::env::var_os("ZERUS_EXPORT_PROVIDER_NOTES").is_some() {
+        println!("PROVIDER_DRAWER {key} {row}");
+    } else {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("client/core/src/teams/fixtures/provider-stop.json");
+        let expected: Value = serde_json::from_slice(&std::fs::read(fixtures).unwrap()).unwrap();
+        assert_eq!(
+            row, expected[key],
+            "the frontend fixture must come from the core inbox projection"
+        );
+    }
+}
+
+const RUN_CHILD: &str = "desktop::teams::actor::tests::provider_stop::run_bound_fixture";
+
+#[test]
+fn provider_stop_scans_a_run_bound_holder_and_rejects_a_replacement_run() {
+    real_rows::isolated(RUN_CHILD);
+}
+
+#[test]
+#[ignore = "run by the private actor fixture"]
+fn run_bound_fixture() {
+    const RUN: &str = "00000000-0000-4000-8000-000000000083";
+    for replaced in [true, false] {
+        let (mut h, mut ports, record, _) = stage_bound("kimi", Some(RUN));
+        assert!(record["launch_id"].is_null());
+        let stopped = hook(
+            &record,
+            "StopFailure",
+            json!({"error_type":"APIProviderRateLimitError","error_message":"The weekly quota was exhausted."}),
+            FAILURE,
+        );
+        assert_eq!(stopped["provider_error"]["error_kind"], "quota");
+        publish(&ports, &stopped);
+        if replaced {
+            let next_run = "00000000-0000-4000-8000-000000000084";
+            let mut next = producer::resumed_record(&record, next_run);
+            producer::confirmed(&mut next, record["conversation_id"].as_str().unwrap());
+            producer::save(&mut next).unwrap();
+            let next = hook(
+                &next,
+                "StopFailure",
+                json!({"error_type":"APIProviderRateLimitError","error_message":"The weekly quota was exhausted."}),
+                FAILURE,
+            );
+            let observe = |run| {
+                crate::state::observe_team_run_for_provider(
+                    h.temp.path(),
+                    run,
+                    next["session_id"].as_str().unwrap(),
+                    "kimi",
+                    next["name"].as_str().unwrap(),
+                    std::time::Instant::now() + std::time::Duration::from_secs(1),
+                )
+            };
+            assert!(matches!(
+                observe(RUN),
+                crate::state::TeamSession::LaunchChanged
+            ));
+            let crate::state::TeamSession::Record(next) = observe(next_run) else {
+                panic!("the native producer must have written the stopped replacement");
+            };
+            let stop = next.provider.as_ref().unwrap().stop.unwrap();
+            let member = h.store.member(TEAM, "m3").unwrap().unwrap();
+            let team = h.store.team(TEAM).unwrap().unwrap();
+            let effect = h
+                .store
+                .effects(TEAM, 200, None)
+                .unwrap()
+                .rows
+                .into_iter()
+                .find(|effect| effect.node == 21)
+                .unwrap();
+            refused(
+                crate::teams::ops::apply_provider_stop(
+                    &mut h.store,
+                    &team,
+                    &effect,
+                    crate::teams::ops::ProviderStopProof {
+                        member: &member,
+                        record: &next,
+                        stop,
+                        confirmation: None,
+                    },
+                    FAILURE,
+                ),
+                crate::teams::ops::PROVIDER_STOP_CHANGED,
+            );
+        }
+        pass(&mut h, &mut ports, FAILURE);
+        let held = h.store.attempt_holder(TEAM, 21).unwrap();
+        assert_eq!(
+            held.is_some(),
+            replaced,
+            "the exact bound run determines the release"
+        );
+        assert!(h.store.member_handle(TEAM, "m3").unwrap().is_none());
+        let items = h.store.inbox(TEAM, 200, None).unwrap().rows;
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.node == 20
+                    && item
+                        .notes
+                        .iter()
+                        .any(|note| note.code == "provider_stop_quota"))
+                .count(),
+            usize::from(!replaced)
+        );
+        pass(&mut h, &mut ports, FAILURE + 4_500);
+        assert_eq!(h.store.inbox(TEAM, 200, None).unwrap().rows, items);
+    }
 }
 
 #[test]
@@ -622,7 +895,7 @@ fn landing_disabled_refuses_a_new_replacement_for_a_retired_land_stage() {
 #[test]
 #[ignore = "run by the private actor fixture"]
 fn retired_land_fixture() {
-    let (mut h, mut ports, record, _) = stage_with_kind("kimi", StageKind::Land);
+    let (mut h, mut ports, record, _) = stage_with_kind("kimi", StageKind::Land, None);
     let lead = h.bind("lead");
     let stopped = hook(
         &record,
@@ -665,10 +938,18 @@ fn pass(h: &mut Harness, ports: &mut Production, now: i64) {
 }
 
 fn stage(agent: &str) -> (Harness, Production, Value, String) {
-    stage_with_kind(agent, StageKind::Review)
+    stage_bound(agent, None)
 }
 
-fn stage_with_kind(agent: &str, kind: StageKind) -> (Harness, Production, Value, String) {
+fn stage_bound(agent: &str, run: Option<&str>) -> (Harness, Production, Value, String) {
+    stage_with_kind(agent, StageKind::Review, run)
+}
+
+fn stage_with_kind(
+    agent: &str,
+    kind: StageKind,
+    run: Option<&str>,
+) -> (Harness, Production, Value, String) {
     let mut h = Harness::empty();
     // The pinned native reader expects the product's private state root.
     std::fs::set_permissions(h.temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -691,14 +972,52 @@ fn stage_with_kind(agent: &str, kind: StageKind) -> (Harness, Production, Value,
             .agent = agent.into();
     }
     h.run(&person(), create).unwrap();
-    for id in ["m1", "m2", "m3"] {
+    for id in ["m1", "m2"] {
         h.bind(id);
+    }
+    if let Some(run) = run {
+        let seat = fixture()
+            .members
+            .into_iter()
+            .find(|m| m.id == "m3")
+            .unwrap();
+        let mut session = seat.session.unwrap();
+        session.session_id = format!("run_id:{run}");
+        h.run(
+            &service(),
+            Operation::SetMemberSession {
+                member: seat.id,
+                session,
+                account: seat.account,
+                worktree: seat.worktree,
+                ownership_nonce: seat.ownership_nonce,
+            },
+        )
+        .unwrap();
+    } else {
+        h.bind("m3");
     }
     for number in 1..19 {
         h.enqueue(&person(), number);
     }
     let other = h.add(&person(), 19);
-    let other_effect = h.submit(other, "m2");
+    let other_effect = "00000000-0000-4000-8000-000000000019".to_owned();
+    h.run(
+        &service(),
+        Operation::HandoutIntent {
+            node: other,
+            member: "m2".into(),
+            effect_request_id: other_effect.clone(),
+        },
+    )
+    .unwrap();
+    h.outcome(
+        &other_effect,
+        HandoutOutcome::Submitted {
+            receipt: "fixture-other-result".into(),
+        },
+    );
+    h.observe(other, TaskStage::InProgress);
     let parent = h.add(&person(), 20);
     h.submit(parent, "m1");
     h.report(parent, "m1");
@@ -773,23 +1092,26 @@ fn stage_with_kind(agent: &str, kind: StageKind) -> (Harness, Production, Value,
 }
 
 fn save_session(member: &Member) -> Value {
+    let session = member.session.as_ref().unwrap();
+    let run = session
+        .session_id
+        .strip_prefix("run_id:")
+        .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
     save_session_as(
         member,
         &format!("{}/fixture/{}", member.agent, member.id),
         &uuid::Uuid::new_v4().to_string(),
-        &uuid::Uuid::new_v4().to_string(),
+        &run,
         &format!("conversation-{}", member.id),
     )
 }
 
 fn save_session_as(member: &Member, name: &str, sid: &str, run: &str, conversation: &str) -> Value {
-    let launch = member
-        .session
-        .as_ref()
-        .unwrap()
-        .session_id
-        .strip_prefix("launch_id:")
-        .unwrap();
+    let binding = &member.session.as_ref().unwrap().session_id;
+    let launch = binding.strip_prefix("launch_id:").unwrap_or_else(|| {
+        assert_eq!(binding.strip_prefix("run_id:"), Some(run));
+        ""
+    });
     let mut record = producer::launched_record(
         &member.agent,
         name,
@@ -801,7 +1123,9 @@ fn save_session_as(member: &Member, name: &str, sid: &str, run: &str, conversati
     );
     producer::confirmed(&mut record, conversation);
     producer::save(&mut record).unwrap();
-    producer::launch_started(launch, name, sid).unwrap();
+    if !launch.is_empty() {
+        producer::launch_started(launch, name, sid).unwrap();
+    }
     record
 }
 

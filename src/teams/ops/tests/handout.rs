@@ -698,6 +698,7 @@ fn readiness_view_contains_only_live_nodes_and_their_archived_direct_leaves() {
         op: &op,
         request_id: TEAM,
         provider_stop: None,
+        closed_confirmation_card: None,
         task_custody: None,
         now: 1234,
         reply: Reply {
