@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show }
 import { tr } from "../../i18n";
 import { TextInput } from "../lib/TextField";
 import { activeTeam, liveTask } from "./actions";
+import { roleLabel } from "./TeamChips";
 import type { EditAction } from "./TeamEditors";
 import type { TaskView, TeamView } from "./types";
 
@@ -16,12 +17,14 @@ export function TaskPlacement(props: {
   onOpen: () => void;
   onAction: EditAction;
 }) {
-  const [draft, setDraft] = createSignal<{ kind: Placement; revision: number; scope: string }>();
+  const [draft, setDraft] = createSignal<{ kind: Placement; scope: string }>();
   const [member, setMember] = createSignal("");
   const [reason, setReason] = createSignal("");
   const [role, setRole] = createSignal("");
   const [pipeline, setPipeline] = createSignal("");
-  const scope = () => `${props.view.bar.id}:${props.task.node}`;
+  // The form belongs to one task of one team: a refreshed card of the same task
+  // keeps it open (zerus-3u5yu 7), only another task or team closes it.
+  const scope = createMemo(() => `${props.view.bar.id}:${props.task.node}`);
   createEffect(on(scope, () => setDraft(undefined), { defer: true }));
   createEffect(on(() => props.otherFormOpen, (open) => { if (open) setDraft(undefined); }, { defer: true }));
 
@@ -30,7 +33,9 @@ export function TaskPlacement(props: {
     const current = task.assignee || (task.holder === undefined ? task.implementer : task.holder);
     return props.view.members.filter((seat) => seat.role === task.role && !seat.lead
       && seat.state === "active" && !!seat.session?.session_id && seat.id !== current
-      && (task.kind !== "stage" || seat.id !== task.implementer));
+      // A stage is never handed to a member who implemented any round of its
+      // target; the board names them (zerus-3u5yu 5).
+      && (task.kind !== "stage" || (seat.id !== task.implementer && !(task.earlier_implementers ?? []).includes(seat.id))));
   });
   const routes = () => props.view.routing_pipelines ?? [];
   const roles = createMemo(() => [...new Set(routes().map((choice) => choice.role))]);
@@ -66,10 +71,12 @@ export function TaskPlacement(props: {
     setReason("");
     setRole(roles().includes(props.task.role) ? props.task.role : "");
     setPipeline(pipelines().some((choice) => choice.id === props.task.pipeline) ? props.task.pipeline : "");
-    setDraft({ kind, revision: props.view.revision, scope: scope() });
+    setDraft({ kind, scope: scope() });
   };
-  const formBlocked = (current: NonNullable<ReturnType<typeof draft>>) =>
-    current.revision !== props.view.revision ? tr("The team changed. Close this form and open it again.") : blocked(current.kind);
+  // The open form follows the team: its choices are the current ones, and a
+  // submit binds the revision current at that moment, as Return and Cancel do;
+  // the native review checks the facts again (zerus-3u5yu 7).
+  const formBlocked = (current: NonNullable<ReturnType<typeof draft>>) => blocked(current.kind);
   const valid = (kind: Placement) => kind === "reassign"
     ? !!reason().trim() && members().some((seat) => seat.id === member())
     : pipelines().some((choice) => choice.id === pipeline());
@@ -83,7 +90,7 @@ export function TaskPlacement(props: {
       ? { node, member: member(), reason: reason() }
       : { node, role: role(), pipeline: pipeline(), keep_task_fields: true };
     setDraft(undefined);
-    props.onAction(current.kind, fields, current.revision, props.view.bar.id);
+    props.onAction(current.kind, fields, props.view.revision, props.view.bar.id);
   };
 
   return <>
@@ -107,7 +114,7 @@ export function TaskPlacement(props: {
             <span class="team-block">{tr("Role")}</span>
             <select class="field" value={role()} onChange={(event) => { setRole(event.currentTarget.value); setPipeline(""); }}>
               <option value="">{tr("Choose a role")}</option>
-              <For each={roles()}>{(id) => <option value={id}>{props.view.member_roles?.find((item) => item.id === id)?.name || id}</option>}</For>
+              <For each={roles()}>{(id) => <option value={id}>{roleLabel(id) !== id ? roleLabel(id) : props.view.member_roles?.find((item) => item.id === id)?.name || id}</option>}</For>
             </select>
           </label>
           <label class="team-block">

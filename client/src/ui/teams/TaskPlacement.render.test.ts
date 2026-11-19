@@ -135,17 +135,22 @@ it("uses only pipelines for the chosen pinned role and checks the original after
   expect(calls()).toHaveLength(1);
 });
 
-it("keeps an open Route bound to the displayed revision and refuses its stale submit", async () => {
+// zerus-3u5yu (7): an open form follows the team. Another write (here the
+// product's Hold of the same task) keeps the choices and binds the revision
+// current at submit, as Return and Cancel do; the native review checks it.
+it("keeps an open Route usable across another team write and sends the current revision", async () => {
   const host = await open(boardFixture.pending);
   button(host, "route").click();
   const form = host.querySelector<HTMLFormElement>('[data-placement-form="route"]')!;
   const submit = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
   expect(submit.disabled).toBe(false);
-  publish(boardFixture.after as unknown as TeamView);
-  expect(submit.disabled).toBe(true);
-  expect(form.textContent).toContain("The team changed. Close this form and open it again.");
+  const after = boardFixture.after as unknown as TeamView;
+  publish(after);
+  expect(host.querySelector('[data-placement-form="route"]')).toBe(form);
+  expect(submit.disabled).toBe(false);
   form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-  expect(calls()).toHaveLength(0);
+  await vi.waitFor(() => expect(calls()).toHaveLength(1));
+  expect(calls()[0][1].call.expected_revision).toBe(after.revision);
 });
 
 it("renders the disabled action and its reason in Russian", async () => {
