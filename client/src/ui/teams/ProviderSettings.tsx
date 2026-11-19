@@ -64,7 +64,11 @@ export function ProviderSettings(props: { view: TeamView; home?: string; locked:
     {/* The detected providers lead; the JSON override waits in a closed section,
         opened while an override is in effect (zerus-uiy9p G13). */}
     <details class="team-provider-advanced" ref={(node) => { advanced = node; }}>
-      <summary>{tr("Advanced: override as JSON")}</summary>
+      {/* A saved override stays named here whatever the draft or a checked
+          candidate shows, also with the section closed (review of #2535). */}
+      <summary>{tr("Advanced: override as JSON")}<Show when={shown()?.saved?.override_config}>
+        <span class="dim team-provider-saved" data-provider-saved-override>{tr("A saved override is in effect.")}</span>
+      </Show></summary>
       <p class="hint">{tr("Override as JSON. Providers replace matching names. Empty uses the project file, or detected metadata when the file is absent.")}</p>
       <TextArea rows={7} aria-label={tr("Provider override")} data-provider-override value={text()} disabled={busy() || props.locked || unknown()} onInput={(e) => { setText(e.currentTarget.value); setChecked(undefined); }} />
     </details>

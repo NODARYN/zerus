@@ -12,7 +12,10 @@ import { MenuLayer } from "../components/Overlays";
 import { setMenu } from "../../store/ui";
 import { MemberCard } from "./MemberCard";
 import { swapBlocked } from "./member-edit";
-import type { MemberView } from "./types";
+import type { MemberView, TeamView } from "./types";
+import generatedBoard from "../../../core/src/teams/fixtures/board-pending.json";
+import { memberActions } from "./actions";
+import { memberStatus } from "./team-model";
 
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); setMenu(undefined); });
@@ -87,4 +90,21 @@ it("the member line wraps its state and menu under the name instead of squeezing
     expect(getComputedStyle(line).flexWrap).toBe("wrap");
     expect(getComputedStyle(host.querySelector<HTMLElement>(".team-member-state")!).flexShrink).toBe("0");
   } finally { document.head.replaceChildren(); }
+});
+
+// Review of #2535, adopted: a member the person stopped who still has open
+// work gets that reason, not "Stop the member first".
+it("explains the remaining open work when Swap is closed after the member was stopped", () => {
+  const member = (generatedBoard as unknown as TeamView).members.find((m) => m.id === "m1")!;
+  expect(member.open_work).toBe(1);
+  // StopMember writes precisely these two fields and leaves assigned work in place.
+  const stopped = { ...member, state: "paused", person_stopped: true };
+  expect(memberStatus(stopped)).toMatchObject({ label: "stopped", tone: "danger" });
+  const actions = memberActions(stopped, "running");
+  const stop = actions.find((action) => action.id === "stop_member");
+  expect(stop).toMatchObject({ disabled: true, reason: "You stopped this member. Resume it to let it work again." });
+  const swap = actions.find((action) => action.id === "swap_member");
+  expect(swap).toMatchObject({ disabled: true });
+  expect(swap?.reason).toContain("open work: 1");
+  expect(swap?.reason).not.toContain("Stop the member first");
 });

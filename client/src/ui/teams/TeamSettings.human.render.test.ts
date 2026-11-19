@@ -14,7 +14,7 @@ import { TIMERS, completeSettings } from "./team-settings";
 import status from "../../../core/src/teams/fixtures/cli-status.json";
 import scope from "../../../core/src/teams/fixtures/provider-scope.json";
 import payload from "../../../core/src/teams/fixtures/providers.json";
-import type { ProviderInspection } from "../../store/teamProviders";
+import type { ProviderInspection, ProviderRead } from "../../store/teamProviders";
 import type { TeamView } from "../../store/teams";
 
 let dispose: (() => void) | undefined;
@@ -55,4 +55,38 @@ it("an override in effect keeps the Advanced section open", async () => {
   const host = provider({ ...inspection, override_config: override });
   await tick(); await tick();
   expect(host.querySelector("[data-provider-override]")!.closest("details")?.open).toBe(true);
+});
+
+// Review of #2535, adopted: a saved override stays visibly identified while an
+// unsaved clear is inspected and Advanced is collapsed.
+it("keeps a saved override visibly identified while an unsaved clear is being inspected", async () => {
+  const base = structuredClone(payload.inspection) as ProviderInspection;
+  const config = { schema: 1, provider: base.providers.slice(0, 1) };
+  const saved = { digest: base.digest, source_digest: base.source_digest, override_config: config };
+  const checkedDigest = "c".repeat(64);
+  const port = vi.fn(async (read: ProviderRead): Promise<ProviderInspection> => {
+    if (read.candidate) {
+      expect(read.candidate.override_config).toBeNull();
+      // The native inspection returns the candidate and persisted selection separately.
+      return { ...base, saved, saved_current: false, override_config: null, digest: checkedDigest };
+    }
+    return { ...base, saved, saved_current: true, override_config: config };
+  });
+  const commit = vi.fn();
+  const host = mount(() => createComponent(ProviderSettings, {
+    view: scope.team as unknown as TeamView, home: base.home, locked: false, onSave: commit, port,
+  }));
+  const details = host.querySelector<HTMLDetailsElement>("details")!;
+  await vi.waitFor(() => expect(host.querySelector("[data-provider-source]")?.textContent).toContain("with your override"));
+  expect(details.open).toBe(true);
+
+  const input = host.querySelector<HTMLTextAreaElement>("[data-provider-override]")!;
+  input.value = "";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  host.querySelector<HTMLButtonElement>("[data-provider-check]")!.click();
+  await vi.waitFor(() => expect(host.querySelector("[data-provider-digest]")?.textContent).toContain(checkedDigest));
+  details.open = false;
+  expect(commit).not.toHaveBeenCalled();
+  const outsideEditor = [...host.querySelectorAll("[data-provider-source],summary")].map((node) => node.textContent).join(" ");
+  expect(outsideEditor).toMatch(/with your override|active override|saved override/i);
 });
