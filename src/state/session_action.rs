@@ -667,7 +667,7 @@ mod tests {
                 "base": [agent], "launch_dir": launch_dir, "transcript": transcript})
         };
         let restore = |record: &Value| {
-            let summary = summary(record, false, &None);
+            let summary = summary(record, false, &None, None);
             let allowed = summary["allowed_actions"]
                 .as_array()
                 .unwrap()
@@ -795,14 +795,14 @@ mod tests {
         // The conversation that was never saved: no transcript file.
         let before_first =
             archived_record("claude/example/never-saved", &dir.path().join("missing.jsonl"));
-        let offered = summary(&before_first, false, &None);
+        let offered = summary(&before_first, false, &None, None);
         assert!(!offered_restore(&offered), "{offered}");
         assert_eq!(offered["action_reasons"]["restore"], NO_CONVERSATION);
         // The restore command's own check still refuses it, unchanged.
         assert!(crate::state::recipes::verify_history(&before_first, true).is_err());
         // The saved conversation offers restore and passes its own check.
         let persisted = archived_record("claude/example/saved", &saved);
-        let offered = summary(&persisted, false, &None);
+        let offered = summary(&persisted, false, &None, None);
         assert!(offered_restore(&offered), "{offered}");
         assert!(crate::state::recipes::verify_history(&persisted, true).is_ok());
     }
@@ -826,7 +826,7 @@ mod tests {
         std::fs::write(&saved, "{\"type\":\"user\"}\n").unwrap();
         let record = archived_record("claude/example/counted", &saved);
         crate::state::journal::read_order::take();
-        let offered = summary(&record, false, &None);
+        let offered = summary(&record, false, &None, None);
         let steps = crate::state::journal::read_order::take();
         assert!(offered_restore(&offered), "{offered}");
         assert_eq!(
@@ -851,7 +851,7 @@ mod tests {
         let unconfirmed =
             crate::state::archive::read_archive("claude/example/unconfirmed", &id).unwrap();
         crate::state::journal::read_order::take();
-        let offered = summary(&unconfirmed, false, &None);
+        let offered = summary(&unconfirmed, false, &None, None);
         let steps = crate::state::journal::read_order::take();
         assert!(!offered_restore(&offered), "{offered}");
         assert!(
@@ -893,7 +893,7 @@ mod tests {
                 crate::state::archive::read_archive(&name, &id).unwrap()
             };
             crate::state::journal::read_order::take();
-            let offered = summary(&record, false, &None);
+            let offered = summary(&record, false, &None, None);
             let steps = crate::state::journal::read_order::take();
             assert!(offered_restore(&offered), "{agent}: {offered}");
             assert!(
