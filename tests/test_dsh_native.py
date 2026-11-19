@@ -54,6 +54,28 @@ def host_process(pid, end=None):
     return state[0], birth
 
 
+def start_private_host(cls):
+    cls.proc = subprocess.Popen([DSH, '--profile', 'web', '--patch', str(cls.overlay), '--no-open',
+                                 '--host', '127.0.0.1', '--port', '0'], env=cls.env, cwd=cls.workspace,
+                                stdin=subprocess.DEVNULL, stdout=cls.log, stderr=cls.log, start_new_session=True)
+    deadline = time.monotonic() + 40
+    while not Path(cls.sock).exists() and cls.proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(.1)
+    if not Path(cls.sock).exists():
+        cls.proc.terminate(); cls.proc.wait(timeout=10)
+        raise RuntimeError('Native test host did not start: ' + (cls.root / 'host.log').read_text()[-2500:])
+
+
+def stop_private_host(cls):
+    if cls.proc.poll() is None:
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill(); cls.proc.wait(timeout=5)
+    Path(cls.sock).unlink(missing_ok=True)
+
+
 @unittest.skipUnless(fixture.required() or DSH and HGS.exists(), 'official dsh and built hgs required')
 class NativeHarness(unittest.TestCase):
     @classmethod
@@ -109,33 +131,11 @@ class NativeHarness(unittest.TestCase):
                    'TMUX_TMPDIR': str(tmux)}
         Path(cls.env['HOME']).mkdir()
         cls.log = (cls.root / 'host.log').open('w')
-        cls.start_host()
-
-    @classmethod
-    def start_host(cls):
-        cls.proc = subprocess.Popen([DSH, '--profile', 'web', '--patch', str(cls.overlay), '--no-open',
-                                     '--host', '127.0.0.1', '--port', '0'], env=cls.env, cwd=cls.workspace,
-                                    stdin=subprocess.DEVNULL, stdout=cls.log, stderr=cls.log, start_new_session=True)
-        deadline = time.monotonic() + 40
-        while not Path(cls.sock).exists() and cls.proc.poll() is None and time.monotonic() < deadline:
-            time.sleep(.1)
-        if not Path(cls.sock).exists():
-            cls.proc.terminate(); cls.proc.wait(timeout=10)
-            raise RuntimeError('Native test host did not start: ' + (cls.root / 'host.log').read_text()[-2500:])
-
-    @classmethod
-    def stop_host(cls):
-        if cls.proc.poll() is None:
-            cls.proc.terminate()
-            try:
-                cls.proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                cls.proc.kill(); cls.proc.wait(timeout=5)
-        Path(cls.sock).unlink(missing_ok=True)
+        start_private_host(cls)
 
     @classmethod
     def tearDownClass(cls):
-        cls.stop_host()
+        stop_private_host(cls)
         cls.log.close(); cls.temp.cleanup()
 
     @classmethod
@@ -1311,8 +1311,8 @@ class NativeHarness(unittest.TestCase):
             self.assertEqual(receipt['status'], 'uncertain', receipt)
         generation = self.rpc('ping')['generation']
         self.assertTrue(self.rpc('inspect', {'sessionId': subject['conversation_id']})['live'])
-        type(self).stop_host()
-        type(self).start_host()
+        stop_private_host(type(self))
+        start_private_host(type(self))
         self.assertNotEqual(self.rpc('ping')['generation'], generation)
         with self.archive_rpc_proxy(intercept):
             settled = self.scoped_archive_action(subject, 'restore', archive_id=archive)
@@ -2001,7 +2001,7 @@ class NativeInputWitness(unittest.TestCase):
     @classmethod
     def restart(cls):
         """kill -9 this class's private host and start a fresh one on the same home."""
-        os.killpg(cls.proc.pid, signal.SIGKILL)
+        cls.proc.kill()
         cls.proc.wait(timeout=10)
         Path(cls.sock).unlink(missing_ok=True)
         cls.proc = subprocess.Popen([DSH, '--profile', 'web', '--patch', str(cls.root / 'patch.json'), '--no-open',
