@@ -7,6 +7,7 @@ import { afterEach, beforeAll, expect, it } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
+import providerStop from "../../../core/src/teams/fixtures/provider-stop-feed.json";
 import catalog from "../../i18n.ru.json";
 import type { DrawerPage } from "../../store/teamDrawers";
 
@@ -62,4 +63,12 @@ it("calls the team's lead «лид» in every Teams string", () => {
   expect(lead.filter(([, value]) => /руководител|координатор/.test(JSON.stringify(value).toLowerCase())).map(([source]) => source)).toEqual([]);
   // The review a stage gives is «ревью», as on the stage chip.
   expect(catalog["Member %1 (%2) %3 during stage #%4 for task #%5. The review returned to the lead. Review the changes or choose the next action."]).toContain("Ревью возвращено лиду");
+});
+
+it("shows the service confirmation in Russian on a provider-stop release", () => {
+  const host = mount(() => createComponent(drawers.TeamFeed, { rows: [providerStop] }));
+  expect(host.querySelector("[data-feed-detail]")?.textContent).toBe(
+    "Сервис подтвердил, что участник остановился из-за ошибки провайдера.",
+  );
+  expect(host.querySelector("[data-feed-seq]")?.getAttribute("title")).toBe(providerStop.text);
 });

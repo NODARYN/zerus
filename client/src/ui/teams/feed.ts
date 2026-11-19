@@ -161,6 +161,10 @@ export function journalDetail(row: Pick<DrawerRow, "kind" | "text">): string {
   const matched = row.text.match(generic);
   if (!matched) return row.text;
   const rest = row.text.slice(matched[0].length).replace(/^[:;]\s*/, "");
+  if (row.kind === "release_provider_stop"
+      && rest === ". The service confirmed that the member stopped after a provider error.") {
+    return tr("The service confirmed that the member stopped after a provider error.");
+  }
   if (row.kind === "handout_outcome" && rest) {
     const [word, ...reason] = rest.split(": ");
     const translated = handoutOutcome(word);
