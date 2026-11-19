@@ -108,25 +108,43 @@ class NativeArchivePaging(OperationCase,BlackBoxCase):
         producer.setUp()
         self.addCleanup(producer.tearDown)
         producer.env["TMUX_TMPDIR"] = str(producer.root)
+        pending = "hgs: Archive catalog coverage is incomplete; metadata is updating; retry the archive"
+
+        def catalog_pending(result):
+            return result.returncode == 1 and not result.stdout and result.stderr.strip() == pending
+
+        def ready(expected):
+            result = subprocess.run([native, "archives", "--json", "--bounded"], input="{}",
+                                    env=producer.env, capture_output=True, text=True, timeout=10)
+            if catalog_pending(result):
+                return False
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            page = json.loads(result.stdout)
+            return page.get("catalog_complete") is not False and page["total"] == expected
+
+        def settle_catalog(expected):
+            producer.hgs("__state", "archive-catalog-worker")
+            producer.wait(lambda: ready(expected))
+
         with patch.object(pause, "HGS", Path(native)):
             producer.hgs("listing-index", "disable", "--json")
             for index in range(121):
                 name = producer.start(tag=f"archive-{index}")
                 producer.hgs("pause", name)
-                producer.hgs("archive", name)
-            producer.hgs("__state", "archive-catalog-worker")
-
-        def ready():
-            result = subprocess.run([native, "archives", "--json", "--bounded"], input="{}",
-                                    env=producer.env, capture_output=True, text=True, timeout=10)
-            pending = "hgs: Archive catalog coverage is incomplete; metadata is updating; retry the archive"
-            if result.returncode == 1 and not result.stdout and result.stderr.strip() == pending:
-                return False
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            page = json.loads(result.stdout)
-            return page.get("catalog_complete") is not False and page["total"] == 121
-
-        producer.wait(ready)
+                binding = producer.binding(name)
+                result = subprocess.run([native, "archive", name], env=producer.env,
+                                        capture_output=True, text=True, timeout=20)
+                if catalog_pending(result):
+                    # The archive writer can refuse before publication. Retry only
+                    # once after confirming the same session and the prior count.
+                    current = producer.binding(name)
+                    for key in ("run_id", "conversation_id"):
+                        self.assertEqual(current[key], binding[key])
+                    settle_catalog(index)
+                    producer.hgs("archive", name)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            settle_catalog(121)
         env = {key: producer.env[key] for key in
                ("HGS_CONFIG_DIR", "HGS_STATE_DIR", "HGS_SELF", "HGS_PEERS", "TMUX_TMPDIR")}
         env["PATH"] = os.pathsep.join([str(producer.bin), self.environment()["PATH"]])
