@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import time
@@ -115,6 +116,17 @@ class NativeArchivePaging(OperationCase,BlackBoxCase):
                 producer.hgs("archive", name)
             producer.hgs("__state", "archive-catalog-worker")
 
+        def ready():
+            result = subprocess.run([native, "archives", "--json", "--bounded"], input="{}",
+                                    env=producer.env, capture_output=True, text=True, timeout=10)
+            pending = "hgs: Archive catalog coverage is incomplete; metadata is updating; retry the archive"
+            if result.returncode == 1 and not result.stdout and result.stderr.strip() == pending:
+                return False
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            page = json.loads(result.stdout)
+            return page.get("catalog_complete") is not False and page["total"] == 121
+
+        producer.wait(ready)
         env = {key: producer.env[key] for key in
                ("HGS_CONFIG_DIR", "HGS_STATE_DIR", "HGS_SELF", "HGS_PEERS", "TMUX_TMPDIR")}
         env["PATH"] = os.pathsep.join([str(producer.bin), self.environment()["PATH"]])
