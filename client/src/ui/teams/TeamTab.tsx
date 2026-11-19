@@ -24,6 +24,7 @@ import { boardColumns, stageAgrees, type BoardColumn } from "./pipeline-view";
 import { followTeamScope, type TeamScope } from "./team-tab-scope";
 import { TaskDependencies } from "./TaskDependencies";
 import { TaskPlacement } from "./TaskPlacement";
+import { TaskEvidence } from "./TaskEvidence";
 import { PlanView } from "./PlanView";
 import { ActionFailureNotice } from "./TeamActionFailure";
 import { LanesView } from "./LanesView";
@@ -193,6 +194,11 @@ export function TeamWorkspace(props: {
     dismissPreview();
   };
   const card = createMemo(() => all().find((candidate) => candidate.node === selectedNode()) ?? null);
+  /** The inspector's evidence is of another revision than its decisions (review of #2531). */
+  const [evidenceUpdating, setEvidenceUpdating] = createSignal(false);
+  const evidenceWait = () => evidenceUpdating() ? tr("The report and verdicts are being read again.") : undefined;
+  /** Why an open reason form's Send waits: Accept and Return wait for matching evidence. */
+  const formWaits = (button: TaskButton) => button.id === "accept" || button.id === "return" ? evidenceWait() : undefined;
   const inspectorOpen = () => !!card() || membersOpen();
   createEffect(on(() => [narrow(), card()?.node, membersOpen()] as const, () => {
     if (!narrow() || !inspectorOpen()) return;
@@ -320,7 +326,9 @@ export function TeamWorkspace(props: {
                       </dl>
                     </Show>
                     <TaskDependencies task={shown()} status={props.view.bar.status} busy={props.busy} onSetDeps={(deps) => send("set_deps", { node: shown().node, deps })} />
+                    <TaskEvidence team={props.view.bar.id} card={shown()} revision={props.view.revision} onUpdating={setEvidenceUpdating} />
                     <TaskActions card={shown()} teamStatus={props.view.bar.status} busy={props.busy} onAction={(kind) => send(kind, { node: shown().node })}
+                      evidenceUpdating={evidenceWait()}
                       onReason={(button) => { setAsking(button); setReason(""); }} />
                     <Show when={asking()}>
                       {(button) => (
@@ -328,7 +336,10 @@ export function TeamWorkspace(props: {
                           <TextInput class="field" aria-label={tr("Reason")} historyKey={`team-reason-${shown().node}`}
                             placeholder={button().id === "return" ? tr("What must change?") : tr("Why is it cancelled?")}
                             value={reason()} onInput={(event) => setReason(event.currentTarget.value)} />
-                          <button type="button" class="btn small primary" disabled={!reason().trim()}
+                          {/* An open Return waits with the toolbar while the evidence is of
+                              another revision; its draft is kept (review of #2531). */}
+                          <button type="button" class="btn small primary" disabled={!reason().trim() || !!formWaits(button())}
+                            title={formWaits(button())} data-reason-send
                             onClick={() => send(button().id, { node: shown().node, reason: reason() })}>{tr("Send")}</button>
                           <button type="button" class="btn small" onClick={() => setAsking(null)}>{tr("Cancel")}</button>
                         </div>

@@ -249,6 +249,7 @@ fn apply_inputs(
             item: None,
         },
         event: None,
+        land_skipped_for: None,
         superseded: None,
         timing: None,
     };
@@ -565,6 +566,7 @@ pub(crate) fn observe_native_intake(
             item: None,
         },
         event: None,
+        land_skipped_for: None,
         superseded: None,
         timing: None,
     };
