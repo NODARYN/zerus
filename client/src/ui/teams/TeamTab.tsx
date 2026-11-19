@@ -3,7 +3,8 @@ import { tr } from "../../i18n";
 import { selected } from "../../store/ui";
 import { canDropTeamTask, requestTeamTask, teamTaskDragOver, teamTaskDrop } from "../../store/teamTaskIntake";
 import { machineCards } from "../../store/machines";
-import { newRequestId, teams, type TeamCall, type TeamOutcome, type UnresolvedCall } from "../../store/teams";
+import { openTask } from "../../store/taskNavigation";
+import { newRequestId, teams, type TeamCall, type TeamFailure, type TeamOutcome, type UnresolvedCall } from "../../store/teams";
 import { rowIdentity, rowIsSession } from "./session-binding";
 import { navigationTeamFor } from "./lead-navigation";
 import { teamCall, type TaskButton } from "./actions";
@@ -23,7 +24,9 @@ import { boardColumns, stageAgrees, type BoardColumn } from "./pipeline-view";
 import { followTeamScope, type TeamScope } from "./team-tab-scope";
 import { TaskDependencies } from "./TaskDependencies";
 import { TaskPlacement } from "./TaskPlacement";
+import { TaskEvidence } from "./TaskEvidence";
 import { PlanView } from "./PlanView";
+import { ActionFailureNotice } from "./TeamActionFailure";
 import { LanesView } from "./LanesView";
 import { TeamTaskCard } from "./TeamTaskCard";
 import { TeamAdvanceBase } from "./TeamAdvanceBase";
@@ -63,7 +66,8 @@ export function TeamWorkspace(props: {
   providerHome?: string;
   busy: boolean;
   failure: { code: string; message: string } | null;
-  actionFailure?: string | null;
+  actionFailure?: TeamFailure | null;
+  onDismissFailure?: () => void;
   onAction: EditAction;
   /** A queue page by its cursor; null is the first page. */
   onPage: (cursor: string | null) => void;
@@ -190,6 +194,11 @@ export function TeamWorkspace(props: {
     dismissPreview();
   };
   const card = createMemo(() => all().find((candidate) => candidate.node === selectedNode()) ?? null);
+  /** The inspector's evidence is of another revision than its decisions (review of #2531). */
+  const [evidenceUpdating, setEvidenceUpdating] = createSignal(false);
+  const evidenceWait = () => evidenceUpdating() ? tr("The report and verdicts are being read again.") : undefined;
+  /** Why an open reason form's Send waits: Accept and Return wait for matching evidence. */
+  const formWaits = (button: TaskButton) => button.id === "accept" || button.id === "return" ? evidenceWait() : undefined;
   const inspectorOpen = () => !!card() || membersOpen();
   createEffect(on(() => [narrow(), card()?.node, membersOpen()] as const, () => {
     if (!narrow() || !inspectorOpen()) return;
@@ -217,7 +226,7 @@ export function TeamWorkspace(props: {
       <TeamEditButtons view={props.view} busy={props.busy} open={editors.open} />
       {editors.dialogs()}
       <Show when={openNotice()}>{(text) => <div class="notice team-notice" role="status" data-team-open-notice><Icon name="info" size={16} /><span>{text()}</span></div>}</Show>
-      <Show when={props.actionFailure}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
+      <Show when={props.actionFailure}>{(reason) => <ActionFailureNotice failure={reason()} onDismiss={() => props.onDismissFailure?.()} />}</Show>
       <Show when={props.failure}>
         {(failure) => (
           <div class="notice danger team-notice" role="alert" data-team-failure>
@@ -288,7 +297,11 @@ export function TeamWorkspace(props: {
                     <dl class="team-facts">
                       <dt>{tr("Task")}</dt><dd>
                         <Show when={shown().task} fallback={tr("not sent yet")}>
-                          {(task) => <><span class="team-block">{task().project}</span><span class="team-block mono">{task().uuid}</span></>}
+                          {/* The task by its project with Open task; its UUID only in the tooltip (G15). */}
+                          {(task) => <span class="team-task-ref" data-task-ref title={tr("Task %1 in %2", task().uuid, task().project)}>
+                            <span class="team-block">{task().project}</span>
+                            <button type="button" class="btn small" data-open-task onClick={() => openTask(task().project, task().uuid)}>{tr("Open task")}</button>
+                          </span>}
                         </Show>
                       </dd>
                       <dt>{tr("Role")}</dt><dd>{tr(shown().role || "unknown")}</dd>
@@ -298,7 +311,7 @@ export function TeamWorkspace(props: {
                         <dt>{tr("Checks the work of")}</dt><dd>{shown().implementer || tr("nobody yet")}</dd>
                       </Show>
                       <dt>{tr("Round")}</dt><dd>{shown().round}</dd>
-                      <Show when={shown().assigned_base}>{(base) => <><dt>{tr("Assigned base")}</dt><dd class="mono">{base()}</dd></>}</Show>
+                      <Show when={shown().assigned_base}>{(base) => <><dt>{tr("Assigned base")}</dt><dd class="mono" data-assigned-base title={base()}>{base().slice(0, 12)}</dd></>}</Show>
                       <Show when={shown().decided_by}><dt>{tr("Decided by")}</dt><dd>{tr(shown().decided_by)}</dd></Show>
                     </dl>
                     <Show when={shown().stages.length}>
@@ -313,7 +326,9 @@ export function TeamWorkspace(props: {
                       </dl>
                     </Show>
                     <TaskDependencies task={shown()} status={props.view.bar.status} busy={props.busy} onSetDeps={(deps) => send("set_deps", { node: shown().node, deps })} />
+                    <TaskEvidence team={props.view.bar.id} card={shown()} revision={props.view.revision} onUpdating={setEvidenceUpdating} />
                     <TaskActions card={shown()} teamStatus={props.view.bar.status} busy={props.busy} onAction={(kind) => send(kind, { node: shown().node })}
+                      evidenceUpdating={evidenceWait()}
                       onReason={(button) => { setAsking(button); setReason(""); }} />
                     <Show when={asking()}>
                       {(button) => (
@@ -321,7 +336,10 @@ export function TeamWorkspace(props: {
                           <TextInput class="field" aria-label={tr("Reason")} historyKey={`team-reason-${shown().node}`}
                             placeholder={button().id === "return" ? tr("What must change?") : tr("Why is it cancelled?")}
                             value={reason()} onInput={(event) => setReason(event.currentTarget.value)} />
-                          <button type="button" class="btn small primary" disabled={!reason().trim()}
+                          {/* An open Return waits with the toolbar while the evidence is of
+                              another revision; its draft is kept (review of #2531). */}
+                          <button type="button" class="btn small primary" disabled={!reason().trim() || !!formWaits(button())}
+                            title={formWaits(button())} data-reason-send
                             onClick={() => send(button().id, { node: shown().node, reason: reason() })}>{tr("Send")}</button>
                           <button type="button" class="btn small" onClick={() => setAsking(null)}>{tr("Cancel")}</button>
                         </div>
@@ -371,7 +389,7 @@ function selectedLeadBinding() {
   // Without the computer's machine UUID no binding can be verified: no lookup.
   return identity.machine ? teams.teamOfSession(identity) : { state: "unknown" as const };
 }
-const actionReason = (source: string) => teams.failureFor(source)?.message;
+const actionReason = (source: string) => teams.failureFor(source);
 
 /** Every unresolved call keeps its own identity and explicit Check/Dismiss. */
 export function TeamUnresolvedList(props: { entries: readonly UnresolvedCall[]; busy: boolean; onCheck: (entry: UnresolvedCall) => void; onDismiss: (entry: UnresolvedCall) => void }) {
@@ -423,14 +441,14 @@ export function TeamTab() {
       <div class="team-loading" role="status" data-team-waiting>
         <span class="dim">{leadChanged() ? tr("The team's lead session has changed. Open it from Teams again.") : binding().state === "none" ? tr("This session is not a team lead.") : binding().exhausted ? tr("Could not find this session's team here. Open it from Teams.") : tr("Finding the team of this session…")}</span>
       </div>
-    }>{(current) => <TeamWorkspace view={current()} busy={teams.busy(current().bar.id)} failure={readFailure()} actionFailure={actionReason(source())}
+    }>{(current) => <TeamWorkspace view={current()} busy={teams.busy(current().bar.id)} failure={readFailure()} actionFailure={actionReason(source())} onDismissFailure={() => teams.clearFailure(source())}
       providerHome={teams.listed().find((row) => row.id === current().bar.id && row.project === current().bar.project)?.home}
       onSettingsSave={(call) => teams.run(call, source())}
       settingsBlocked={teams.unresolved().some((entry) => entry.call.team === current().bar.id && ["settings", "validation_config"].includes(entry.call.action.kind))}
       placementUnresolved={(node) => teams.unresolved().some(({ call }) => call.team === current().bar.id
         && call.action.node === node && (call.action.kind === "reassign" || call.action.kind === "route"))}
       onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => { const fresh = view(); if (fresh) requestTeamTask(fresh.bar); }} />}</Show>
-    <Show when={!view() && actionReason(source())}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
+    <Show when={!view() && actionReason(source())}>{(reason) => <ActionFailureNotice failure={reason()} onDismiss={() => teams.clearFailure(source())} />}</Show>
     <TeamUnresolvedList entries={teams.unresolved()} busy={teams.busy()} onCheck={(entry) => void teams.check(entry, source())} onDismiss={(entry) => void teams.dismiss(entry, source())} />
     <TeamConfirmDialog source={source()} />
   </>;
