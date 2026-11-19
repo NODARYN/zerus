@@ -98,14 +98,35 @@ impl Runtime {
         if !self.due(store, team, &key, "", now)? {
             return Ok(None);
         }
-        let answer = match held.filter(|effect| effect.state == "submitted") {
-            Some(effect) => ports.held_availability(store, team, m, effect, now),
-            None => ports.availability(team, m).map(|answer| (answer, None)),
+        let (answer, confirmation) = match held.filter(|effect| effect.state == "submitted") {
+            Some(effect) => {
+                let gate = self.provider_confirmation(team, m)?;
+                let answer = ports.held_availability(
+                    store,
+                    team,
+                    m,
+                    effect,
+                    gate.as_ref().map(|(_, proof)| proof),
+                    now,
+                );
+                (answer, gate)
+            }
+            None => (
+                ports.availability(team, m).map(|answer| (answer, None)),
+                None,
+            ),
         };
         match answer {
             Ok((answer, stopped)) => {
                 if let Some(binding) = stopped {
-                    self.provider_stop_confirmed(store, team, m, binding, now)?;
+                    self.provider_stop_confirmed(
+                        store,
+                        team,
+                        m,
+                        binding,
+                        confirmation.as_ref(),
+                        now,
+                    )?;
                 }
                 self.recovered(store, team, &key, now)?;
                 if let Some(session) = &m.session {
