@@ -400,7 +400,7 @@ export function apply(ctx, config) {
     return next.installed;
   }
   callEnvironmentInstalled();
-  ctx.on('dispose', () => spawns?.restore());
+  ctx.effect(() => () => spawns?.restore());
   const jobRegistry = ctx.get('jobs');
   if (jobRegistry) ctx.on('dispose',jobRegistry.events.subscribe({owners:'scope'},event => {
     // A job a tool call registers keeps that call's token until it settles.
