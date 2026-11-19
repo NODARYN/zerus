@@ -1154,6 +1154,27 @@ class NativeHarness(unittest.TestCase):
         self.assertEqual(self.rpc('ping')['generation'], generation)
         self.assertEqual(host_process(self.proc.pid)[1], born[1])
 
+    def test_spawn_wrappers_are_restored_when_private_bridge_unloads(self):
+        subject = self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        self.rpc('send', {'sessionId': subject['conversation_id'], 'requestId': str(uuid.uuid4()),
+                          'mode': 'steer',
+                          'content': [{'type': 'text', 'text': 'HGS_SPAWN_FIXTURE cleanup'}]})
+        evidence = self.root / 'holds' / 'spawn-cleanup.json'
+        self.wait(evidence.is_file, timeout=30)
+        result = json.loads(evidence.read_text())
+        self.assertEqual(result, {'wrapped': [True, True], 'restored': [True, True]})
+
+        def reloaded():
+            try:
+                ping = self.rpc('ping')
+            except OSError:
+                return None
+            return ping if ping['generation'] != generation else None
+
+        self.assertTrue(self.wait(reloaded)['shellIdentity'])
+        self.assertEqual(host_process(self.proc.pid)[1], born[1])
+
     def test_pause_resume_preserves_identity_and_other_agent(self):
         a, b = self.create(), self.create()
         self.cli('pause', a)
