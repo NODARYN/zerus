@@ -47,7 +47,7 @@ it.each([
     onDecide: () => {}, onOpenTeam: () => {},
   }));
   expect(host.querySelector("[data-kind-sentence]")?.textContent).toBe(
-    `Для участника ${row.parameters[0][1]} нужен хост DeepSeek с поддержкой команд Zerus.`,
+    `Для участника ${row.parameters[0][1]} нужен хост DeepSeek с поддержкой Agent Teams.`,
   );
   expect(host.querySelector(".waiting-text")?.textContent).toBe(
     `Остановите простаивающие сессии DeepSeek или перезапустите хост самостоятельно, а когда он снова заработает, ${action}, поскольку Zerus не повторит этот запуск.`,

@@ -1,6 +1,6 @@
 use super::*;
-use crate::desktop::teams::items::kind::LAUNCH_FAILING;
 use crate::desktop::teams::items::Failure as ItemFailure;
+use crate::desktop::teams::items::kind::LAUNCH_FAILING;
 
 /// The failures a launch row must reach before its service item is written:
 /// the retry table's 15-minute cap (zerus-63rru.24 and zerus-63rru.63).
@@ -78,11 +78,11 @@ impl Runtime {
         }
         Ok(now >= row.retry_at)
     }
-    pub(super) fn close_stale(
-        &mut self,
+    fn close_open_card(
         store: &mut Store,
         team: &Team,
         row: &mut Row,
+        reason: &str,
         now: i64,
     ) -> Result<()> {
         if let Some(card) = row.card_id {
@@ -95,13 +95,29 @@ impl Runtime {
                     team,
                     Operation::CloseCard {
                         card,
-                        reason: "The launch precondition recovered; this card is stale.".into(),
+                        reason: reason.into(),
                     },
                     &mut row.close_request,
                     now,
                 )?;
             }
         }
+        Ok(())
+    }
+    pub(super) fn close_stale(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        row: &mut Row,
+        now: i64,
+    ) -> Result<()> {
+        Self::close_open_card(
+            store,
+            team,
+            row,
+            "The launch precondition recovered; this card is stale.",
+            now,
+        )?;
         row.card_id = None;
         row.card_request = None;
         row.card_done = false;
@@ -143,12 +159,21 @@ impl Runtime {
         }
         self.failure(store, &mut row, error, now, false)
     }
-    pub(super) fn note_removed(&mut self, team: &Team, member: &Member, now: i64) -> Result<()> {
+    pub(super) fn note_removed(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &Member,
+        now: i64,
+    ) -> Result<()> {
         self.selected = None;
         if let Some(mut row) = self.ledger().get(&team.id, &member.id)? {
             self.selected = Some((row.team.clone(), row.member.clone()));
             if self.owns(&row) {
                 self.admitted = None;
+            }
+            if row.state == State::Blocked {
+                Self::close_open_card(store, team, &mut row, "Member removed", now)?;
             }
             if !row.late_after_stop
                 && matches!(

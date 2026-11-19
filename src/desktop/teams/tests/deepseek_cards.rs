@@ -92,6 +92,15 @@ fn an_older_deepseek_host_requires_a_new_member_after_recovery() {
         },
     )
     .unwrap();
+    let card_id = card["card"].as_u64().unwrap();
+    for now in [4_000_000, 5_000_000, 6_000_000] {
+        service.tick(&mut h.store, &mut effects, TEAM, now).unwrap();
+    }
+    assert_eq!(
+        h.store.card(TEAM, card_id).unwrap().unwrap().state,
+        "closed"
+    );
+    assert!(h.store.waiting(10, None).unwrap().rows.is_empty());
     let replacement = add_deepseek_member(&mut h);
     assert_ne!(replacement, member);
     until(&mut service, &mut h, &mut effects, |h, _| {
